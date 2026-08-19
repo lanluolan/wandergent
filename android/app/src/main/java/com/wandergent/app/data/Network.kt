@@ -3,7 +3,6 @@ package com.wandergent.app.data
 import com.wandergent.app.BuildConfig
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -41,31 +40,6 @@ object ApiJson {
  * Hilt lands in Phase 2 when there is a second screen -- see docs/decisions.md.
  */
 object Network {
-
-    /**
-     * Points every request at whatever [ServerConfig] currently holds.
-     *
-     * Retrofit fixes its base URL at construction, so redirecting per request is the
-     * way to make the address a setting without rebuilding Retrofit on every change.
-     * Only scheme/host/port are replaced -- a path prefix on the configured address is
-     * not honoured, which is fine for "which machine is the dev server on".
-     */
-    private val retarget = Interceptor { chain ->
-        val target = ServerConfig.baseUrl.toHttpUrlOrNull()
-            ?: return@Interceptor chain.proceed(chain.request())
-        val request = chain.request()
-        chain.proceed(
-            request.newBuilder()
-                .url(
-                    request.url.newBuilder()
-                        .scheme(target.scheme)
-                        .host(target.host)
-                        .port(target.port)
-                        .build()
-                )
-                .build()
-        )
-    }
 
     /**
      * The bearer token for the signed-in account, or null.
@@ -121,7 +95,6 @@ object Network {
         // mid-flight and surfaces as an indistinguishable network failure.
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
-        .addInterceptor(retarget)
         .addInterceptor(authenticate)
         .apply {
             if (BuildConfig.DEBUG) {
@@ -133,9 +106,7 @@ object Network {
         .build()
 
     val planApi: PlanApi = Retrofit.Builder()
-        // A placeholder: `retarget` above rewrites the host of every request before it
-        // leaves. Retrofit only needs a syntactically valid base to resolve paths against.
-        .baseUrl(ServerConfig.default)
+        .baseUrl(ServerConfig.baseUrl)
         .client(httpClient)
         .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
         .build()
@@ -147,18 +118,18 @@ object Network {
      * [httpClient]'s 120-second read timeout is sized for a run that makes several LLM
      * calls. Nothing on the community feed touches the model, so inheriting that would
      * leave someone watching a spinner for two minutes when the server is simply down.
-     * The builder is derived from [httpClient], so the retarget interceptor, the
+     * The builder is derived from [httpClient], so the auth interceptor, the
      * connection pool and debug logging are all still shared.
      */
     val authApi: AuthApi = Retrofit.Builder()
-        .baseUrl(ServerConfig.default)
+        .baseUrl(ServerConfig.baseUrl)
         .client(httpClient.newBuilder().readTimeout(20, TimeUnit.SECONDS).build())
         .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(AuthApi::class.java)
 
     val communityApi: CommunityApi = Retrofit.Builder()
-        .baseUrl(ServerConfig.default)
+        .baseUrl(ServerConfig.baseUrl)
         .client(httpClient.newBuilder().readTimeout(20, TimeUnit.SECONDS).build())
         .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
         .build()

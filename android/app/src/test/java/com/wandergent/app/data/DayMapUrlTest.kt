@@ -54,22 +54,11 @@ class DayMapUrlTest {
 
     @Test
     fun `the interactive page is asked of our own backend, one place per stop`() {
-        ServerConfig.reset()
         val url = DayMapClient.interactiveUrl(day)!!
 
-        assertTrue(url.startsWith(ServerConfig.default + "day-map/interactive?"), url)
+        assertTrue(url.startsWith(ServerConfig.baseUrl + "day-map/interactive?"), url)
         assertEquals(4, Regex("place=").findAll(url).count())
         // The Maps key lives on the server; nothing key-shaped is assembled here.
         assertTrue(!url.contains("key="), url)
-    }
-
-    @Test
-    fun `a changed backend address is followed`() {
-        ServerConfig.set("http://192.168.1.10:8000")
-        try {
-            assertTrue(DayMapClient.interactiveUrl(day)!!.startsWith("http://192.168.1.10:8000/"))
-        } finally {
-            ServerConfig.reset()
-        }
     }
 }

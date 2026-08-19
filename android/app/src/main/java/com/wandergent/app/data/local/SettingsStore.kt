@@ -5,7 +5,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.wandergent.app.data.Currency
-import com.wandergent.app.data.ServerConfig
 import com.wandergent.app.data.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -17,8 +16,8 @@ private val Context.settingsDataStore by preferencesDataStore(name = "settings")
  *
  * Split by what the setting is *about*. Currency belongs to the traveller, so it is
  * keyed by user id and a second account starts from the default instead of inheriting
- * whatever the last person picked. Theme and server address belong to the device --
- * both have to apply on the login screen, where there is no account yet.
+ * whatever the last person picked. Theme belongs to the device -- it has to apply on the
+ * login screen, where there is no account yet.
  *
  * Kept out of [SessionStore], which holds *who is signed in*, and out of the Room user
  * table, which would mean a schema migration for a string.
@@ -28,7 +27,6 @@ class SettingsStore(private val context: Context) {
     private fun currencyKey(userId: Long) = stringPreferencesKey("currency_$userId")
 
     private val themeKey = stringPreferencesKey("theme_mode")
-    private val serverKey = stringPreferencesKey("server_url")
 
     /** Never null: an account that has not chosen falls back to [Currency.DEFAULT]. */
     fun currency(userId: Long): Flow<Currency> =
@@ -48,17 +46,4 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit { it[themeKey] = mode.name }
     }
 
-    /** Empty string means "the address this APK was built with". */
-    val serverUrl: Flow<String> = context.settingsDataStore.data.map { preferences ->
-        preferences[serverKey]?.takeIf(String::isNotBlank) ?: ServerConfig.default
-    }
-
-    suspend fun setServerUrl(url: String) {
-        val parsed = ServerConfig.parse(url) ?: return
-        context.settingsDataStore.edit { it[serverKey] = parsed.toString() }
-    }
-
-    suspend fun resetServerUrl() {
-        context.settingsDataStore.edit { it.remove(serverKey) }
-    }
 }

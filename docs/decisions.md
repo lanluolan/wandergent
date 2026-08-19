@@ -377,7 +377,7 @@ First of several batches closing the gaps listed in the app audit.
 - **Saved plans are per account** (Room v2 -> v3, `userId` column). Pre-account rows migrate to `userId = 0` and are **adopted by the first account that opens the library**, not hidden: a migration has no session, so it cannot assign a real owner, and making someone's saved trips silently vanish is worse than one device owner inheriting their own old plans.
 - **Delete gets both a confirmation and an undo**, which is not redundant: the dialog catches the mis-tap before it happens, the snackbar catches the confirmed one regretted a second later. Neither covers the other case. `restore` re-inserts with the original id -- Room binds a non-zero PK as given even under `autoGenerate` -- so undo returns the row rather than a copy.
 - **Theme and server address are device settings, currency stays per account.** The split is what the setting is *about*: currency belongs to the traveller, but the theme and the address have to be in force on the login screen, where no account exists yet. Both are read in `MainActivity`.
-- **The backend address is a runtime setting, applied by an OkHttp interceptor.** Retrofit fixes its base URL at construction, so every request is retargeted in flight instead of rebuilding Retrofit on each change. Only scheme/host/port are replaced -- a path prefix is not honoured, which is fine for "which machine is the dev server on". A bare `192.168.1.10:8000` is read as `http://`: this talks to a dev box on a LAN, where https would be the surprising guess.
+- **~~The backend address is a runtime setting, applied by an OkHttp interceptor.~~** *(reversed 2026-08-19, below.)* Retrofit fixes its base URL at construction, so every request is retargeted in flight instead of rebuilding Retrofit on each change. Only scheme/host/port are replaced -- a path prefix is not honoured, which is fine for "which machine is the dev server on". A bare `192.168.1.10:8000` is read as `http://`: this talks to a dev box on a LAN, where https would be the surprising guess.
 - **Verified on device against the real database, not just the UI.** The saved table was empty, so a `userId = 0` row was injected into the app's own SQLite file to exercise adoption -- and the copy had to include the `-wal`, since Room runs in WAL mode and a plain `cat` of the `.db` shows a stale snapshot. That first read said "0 rows" for a database that had one.
 - **Still open from the same audit**: structured trip inputs, plan editing/reordering, share/export/calendar/booking links, map interaction, and app language. An embedded interactive map is not on that list -- the test device has no Google Play services, so the Maps SDK cannot run at all; the reachable version is full-screen zoom plus a hand-off to an external map app.
 
@@ -1492,3 +1492,36 @@ frame: `android:windowLightStatusBar` would have left dark-on-dark icons for the
 whenever the in-app mode disagrees with the system. `MainActivity` now drives
 `isAppearanceLight{Status,Navigation}Bars` from the resolved `dark` flag in a `SideEffect`, so
 the bars follow the setting the user actually chose.
+
+## The backend address is compiled in, not a setting (2026-08-19)
+
+Reverses the entry above. The profile screen carried a "Backend address" row and a dialog;
+`SettingsStore` persisted it, and an OkHttp interceptor rewrote scheme/host/port on every
+request so Retrofit's fixed base URL could be overridden at runtime.
+
+Three things were wrong with it:
+
+- **It advertised a dev build.** A consumer travel app does not ask its users for a server
+  address. It was the one row on the page that broke the illusion, and it would be in every
+  portfolio screenshot.
+- **It was unreachable exactly when needed.** `AppRoot` sends a signed-out user to the login
+  screen; the profile tab lives inside `main`, behind sign-in. A wrong address means login
+  fails, which means the only screen that can fix the address cannot be opened. The escape
+  was clearing app data.
+- **It bought almost nothing.** `adb reverse tcp:8000 tcp:8000` already covers a USB device
+  *and* an emulator, which is every day-to-day case. What remained was a cable-less phone on
+  the LAN and a future deployed backend -- both fine as a rebuild.
+
+`BuildConfig.BASE_URL` now comes from the `wandergent.serverUrl` Gradle property, validated
+against a character whitelist at configure time and normalised through `ServerConfig.parse` at
+class load, so a typo fails the build or fails at startup rather than as an unexplained network
+error. The retarget interceptor is gone; Retrofit's base URL is the real base URL again.
+
+`ServerConfig.parse` survives the deletion because the scheme assumption still matters: a bare
+`192.168.1.10:8000` in the flag means `http` on debug and `https` on release, where
+`network_security_config.xml` denies cleartext anyway.
+
+Removed alongside it: the "Saved trips" row, an `InfoRow` in a list of tappable `SettingRow`s.
+Non-tappable text among tappable rows reads as broken, and what it said is already said at the
+moment it matters -- the sign-out dialog.
+

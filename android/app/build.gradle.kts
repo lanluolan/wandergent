@@ -20,7 +20,22 @@ android {
         // device's own 127.0.0.1:8000 forward to the host's. That works for a USB
         // device and an emulator alike, needs no shared Wi-Fi, no host IP lookup, and
         // no inbound firewall hole -- so the backend can stay bound to loopback.
-        buildConfigField("String", "BASE_URL", "\"http://127.0.0.1:8000/\"")
+        //
+        // The one case it does not cover is a phone with no cable, and a deployed
+        // backend later. Both are rebuilds rather than a setting: shipping an address
+        // field in a travel app's profile screen advertises a dev build to every user
+        // to spare the developer one flag. Override with
+        // `-Pwandergent.serverUrl=192.168.1.10:8000`.
+        val serverUrl = (findProperty("wandergent.serverUrl") as String?)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "127.0.0.1:8000"
+        // Goes into generated Kotlin source as a string literal, so validate as a
+        // whitelist rather than trying to escape whatever arrives on the command line.
+        require(serverUrl.matches(Regex("[A-Za-z0-9._:/-]+"))) {
+            "wandergent.serverUrl is not a plausible address: $serverUrl"
+        }
+        buildConfigField("String", "BASE_URL", "\"$serverUrl\"")
     }
 
     buildFeatures {

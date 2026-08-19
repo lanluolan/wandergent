@@ -31,7 +31,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
 import com.wandergent.app.data.Currency
-import com.wandergent.app.data.ServerConfig
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.local.SettingsStore
@@ -79,11 +78,10 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
     val currency by remember(user?.id) {
         user?.id?.let(settings::currency) ?: flowOf(Currency.DEFAULT)
     }.collectAsStateWithLifecycle(Currency.DEFAULT)
-    // Device-wide, unlike currency: both apply before anyone is signed in. Read again
+    // Device-wide, unlike currency: it applies before anyone is signed in. Read again
     // here rather than passed down from the activity, so the profile tab can show and
-    // change them without threading state through every screen in between.
+    // change it without threading state through every screen in between.
     val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.DEFAULT)
-    val serverUrl by settings.serverUrl.collectAsStateWithLifecycle(ServerConfig.default)
 
     /** A plan handed from the library to the planner, to be edited. Cleared on arrival. */
     var reviseSaved by remember { mutableStateOf<SavedPlanEntity?>(null) }
@@ -198,9 +196,6 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
                     },
                     themeMode = themeMode,
                     onThemeChange = { scope.launch { settings.setThemeMode(it) } },
-                    serverUrl = serverUrl,
-                    onServerUrlChange = { scope.launch { settings.setServerUrl(it) } },
-                    onServerUrlReset = { scope.launch { settings.resetServerUrl() } },
                     onLogout = onLogout,
                 )
             }

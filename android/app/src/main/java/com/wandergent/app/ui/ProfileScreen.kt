@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -34,11 +33,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.wandergent.app.BuildConfig
 import com.wandergent.app.data.Currency
-import com.wandergent.app.data.ServerConfig
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.UserEntity
 import java.text.SimpleDateFormat
@@ -58,15 +55,11 @@ fun ProfileScreen(
     onCurrencyChange: (Currency) -> Unit,
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
-    serverUrl: String,
-    onServerUrlChange: (String) -> Unit,
-    onServerUrlReset: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var confirmLogout by remember { mutableStateOf(false) }
     var pickingCurrency by remember { mutableStateOf(false) }
     var pickingTheme by remember { mutableStateOf(false) }
-    var editingServer by remember { mutableStateOf(false) }
     var managingEmail by remember { mutableStateOf(false) }
 
     Column(
@@ -130,13 +123,6 @@ fun ProfileScreen(
                     onClick = { pickingTheme = true },
                 )
                 HorizontalDivider()
-                SettingRow(
-                    label = "Backend address",
-                    value = serverUrl,
-                    enabled = true,
-                    onClick = { editingServer = true },
-                )
-                HorizontalDivider()
                 // Says what is *lost*, not just what is missing. "Unverified" alone
                 // leaves someone to find out months later that their account cannot be
                 // recovered, at the moment they need it recovered.
@@ -150,8 +136,6 @@ fun ProfileScreen(
                     enabled = true,
                     onClick = { managingEmail = true },
                 )
-                HorizontalDivider()
-                InfoRow("Saved trips", "Stored on this device, per account. Uninstalling removes them.")
                 HorizontalDivider()
                 InfoRow("Version", BuildConfig.VERSION_NAME)
             }
@@ -265,21 +249,6 @@ fun ProfileScreen(
         )
     }
 
-    if (editingServer) {
-        ServerUrlDialog(
-            current = serverUrl,
-            onDismiss = { editingServer = false },
-            onSave = {
-                onServerUrlChange(it)
-                editingServer = false
-            },
-            onReset = {
-                onServerUrlReset()
-                editingServer = false
-            },
-        )
-    }
-
     if (confirmLogout) {
         AlertDialog(
             onDismissRequest = { confirmLogout = false },
@@ -295,65 +264,6 @@ fun ProfileScreen(
             },
         )
     }
-}
-
-/**
- * Where the backend lives.
- *
- * A dev-facing setting, so it says which address goes with which setup rather than
- * making the reader remember that `10.0.2.2` is the emulator's word for the host.
- */
-@Composable
-private fun ServerUrlDialog(
-    current: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
-    onReset: () -> Unit,
-) {
-    var text by remember { mutableStateOf(current) }
-    val valid = ServerConfig.isValid(text)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Backend address") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    singleLine = true,
-                    isError = !valid,
-                    label = { Text("Address") },
-                    placeholder = { Text(ServerConfig.default) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "USB debugging: ${ServerConfig.default} (run adb reverse tcp:8000 tcp:8000 first)\n"
-                        + "Emulator: http://10.0.2.2:8000\n"
-                        + "Same Wi-Fi: http://<your computer's LAN IP>:8000 (backend needs --host 0.0.0.0)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (!valid) {
-                    Text(
-                        "That is not a usable address. You can leave out http:// -- it will be added.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(text) }, enabled = valid) { Text("Save") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onReset) { Text("Reset") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-            }
-        },
-    )
 }
 
 /** An [InfoRow] you can tap, for the rows that are settings rather than facts. */

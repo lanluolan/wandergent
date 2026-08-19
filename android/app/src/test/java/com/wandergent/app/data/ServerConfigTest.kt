@@ -1,8 +1,9 @@
 package com.wandergent.app.data
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -62,25 +63,18 @@ class ServerConfigTest {
         assertNull(ServerConfig.parse(""))
         assertNull(ServerConfig.parse("   "))
         assertNull(ServerConfig.parse("http://"))
-        assertFalse(ServerConfig.isValid("not a url at all"))
-        assertTrue(ServerConfig.isValid("127.0.0.1:8000"))
+        assertNull(ServerConfig.parse("not a url at all"))
+        // The Gradle property is only a whitelist of URL-ish characters, so this is the
+        // gate that catches what still gets through -- at class load, not first request.
+        assertNull(ServerConfig.parse("::::"))
+        assertNotNull(ServerConfig.parse("127.0.0.1:8000"))
     }
 
     @Test
-    fun `setting an unusable address leaves the old one alone`() {
-        // A silent no-op beats pointing the app at nothing: the previous address still
-        // worked, and the dialog will not let an invalid one be saved anyway.
-        ServerConfig.reset()
-        val before = ServerConfig.baseUrl
-        ServerConfig.set("::::")
-        assertEquals(before, ServerConfig.baseUrl)
-    }
-
-    @Test
-    fun `reset goes back to what the APK was built with`() {
-        ServerConfig.set("http://192.168.1.10:8000")
-        assertEquals("http://192.168.1.10:8000/", ServerConfig.baseUrl)
-        ServerConfig.reset()
-        assertEquals(ServerConfig.default, ServerConfig.baseUrl)
+    fun `the built address is normalised and ends in a slash`() {
+        // Everything that builds a URL appends path segments to this, so a missing
+        // trailing slash silently eats the last segment of the base.
+        assertTrue(ServerConfig.baseUrl.endsWith("/"), ServerConfig.baseUrl)
+        assertNotNull(ServerConfig.baseUrl.toHttpUrlOrNull())
     }
 }
