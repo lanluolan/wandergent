@@ -1,0 +1,105 @@
+# Everything here is free. The token-spending LLM eval lives in eval.yml and only runs
+# when a human asks for it -- on `push` it would bill for every typo fix.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push makes the previous run's answer irrelevant, so stop paying for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and the version actually developed against. This matrix is
+        # what makes `requires-python = ">=3.11"` a tested fact rather than an assertion;
+        # there is no `.python-version` pin by design -- see docs/decisions.md.
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Must come before uv: `python-downloads = "never"` in pyproject.toml stops uv
+      # fetching an interpreter, so one has to already be on the runner.
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      # --locked, not --frozen: a dependency changed without committing the lockfile
+      # fails here rather than breaking the next person's checkout.
+      - run: uv sync --locked --python ${{ matrix.python }}
+
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+      # Offline: the LLM is scripted and HTTP is served by httpx.MockTransport, so this
+      # needs no API key and cannot flake on someone else's uptime.
+      - run: uv run pytest -q
+
+  mcp:
+    name: MCP protocol
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+
+      # Its own job on purpose: this one spawns a subprocess and reaches Open-Meteo, so
+      # a network blip must not be able to redden the offline suite.
+      - run: uv run pytest -m mcp -q
+
+  android:
+    name: android
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-java@v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v4.0.1
+
+      # compileSdk is 37, which a runner image may not carry yet. Installing it
+      # explicitly turns "missing platform" into a named failure instead of a Gradle
+      # stack trace 40 lines deep.
+      - run: sdkmanager --install "platforms;android-37" "build-tools;37.0.0"
+
+      - run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v7.0.1
+        # if: always() -- a failed build still leaves reports worth reading.
+        if: always()
+        with:
+          name: android-debug
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/reports/tests/**
+          if-no-files-found: ignore

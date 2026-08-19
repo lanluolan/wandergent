@@ -1,0 +1,51 @@
+# Manual only. Every run makes real LLM calls and real Google Maps calls, so this is a
+# deliberate spend -- the right gate for prompt, tool and model changes, which is a
+# decision a human makes anyway.
+name: LLM eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      subset:
+        description: "Which cases to run"
+        type: choice
+        default: smoke
+        options: [smoke, all]
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+
+      - name: Run the eval
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          # Without it the maps tools degrade rather than fail, so the run still
+          # completes -- it just measures a different agent than production.
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        run: |
+          uv run python -m evals.run \
+            ${{ inputs.subset == 'all' && '--all' || '' }} \
+            --json eval-result.json
+
+      - uses: actions/upload-artifact@v7.0.1
+        # The numbers matter most when the job failed, so upload either way.
+        if: always()
+        with:
+          name: eval-result
+          path: backend/eval-result.json
+          if-no-files-found: warn
