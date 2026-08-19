@@ -1723,3 +1723,49 @@ refuses a genuinely incomplete request, by name.
 Verified both directions on device against the same build, because checking only the
 required side would not distinguish this from hard-coding "always required".
 
+## No forecast is not a failed forecast (2026-08-19)
+
+Found on a live run: `get_weather_forecast` was failing on the product's most ordinary
+request. "3 days in Los Angeles next month" put a red *"weather service unavailable:
+Client error '400 Bad Request' for url 'https://api.open-meteo.com/v1/forecast?latitude=
+34.05223&longitude=..."* on the traveller's screen, raw query string and an MDN link
+included.
+
+Two separate mistakes, and the module docstring had already described the correct
+behaviour for both.
+
+**An off-by-one at the horizon.** Open-Meteo serves 16 days *inclusive of today*, so the
+last date it answers for is `today + 15`. The guard computed `horizon = today + 16`, so
+exactly one date -- the one upstream refuses -- got past it and onto the wire. Verified
+directly: `2026-09-03` returns 200, `2026-09-04` returns 400.
+
+The test that should have caught this used `horizon + 5`. Picking a value comfortably past
+a boundary tests the far field, not the boundary; the two new cases sit exactly on
+`today + 15` and `today + 16`.
+
+**Out-of-range treated as an error.** `_clamp_range` returned one reason string for two
+different situations, and the caller turned all of them into `ok=False`. A range in the
+past is a mistake in the request. A range beyond the horizon is the normal case for a trip
+planned a month out -- nothing failed, the data does not exist yet. It now returns
+`ok=True` with no days and a `note` telling the planner to use seasonal norms and say so
+rather than state a forecast, which is what the tool schema had been promising all along.
+A partial range gets the same treatment and names the date its coverage stops at, because
+a partial answer is the one most likely to be read as a whole one.
+
+## The offline suite was not offline (2026-08-19)
+
+Emptying `backend/.env` -- now the normal deployment -- turned 35 tests red at once, all
+of them `assert 400 == 200` on planning endpoints. Nothing about them had changed: they
+had always required an LLM key to be configured, and passed only because whoever ran them
+happened to have one.
+
+`CLAUDE.md` documents this suite as "offline, no API key needed". That was true of what the
+tests *do* and false of what they *read*: `Settings` loads `.env`, so results depended on a
+file that is deliberately not committed. An operator narrowing `LLM_BYOK_BASE_URLS` broke a
+different test the same way, one fix later.
+
+`conftest.py` now pins the LLM settings for every test, alongside the rate limiter reset
+that was already there for the same reason. Tests about the *absence* of a setting
+monkeypatch it back themselves, which wins and is undone the same way. Confirmed by running
+the suite with all four variables explicitly empty.
+

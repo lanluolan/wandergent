@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from app.tools.weather import (
-    MAX_FORECAST_DAYS,
+    FORECAST_DAYS,
     WEATHER_TOOL_SCHEMA,
     get_weather_forecast,
 )
@@ -149,15 +149,58 @@ async def test_unknown_city_reports_no_location() -> None:
     assert "no location found" in result.error
 
 
-async def test_dates_beyond_horizon_skip_the_network() -> None:
-    """A trip a month out is the common case; it must degrade without calling upstream."""
+async def test_the_last_forecast_day_is_still_fetched() -> None:
+    """The boundary the old test stepped over, and where this was wrong.
+
+    Open-Meteo counts its 16 days inclusive of today, so `today + 15` is the last date it
+    answers for. The horizon used to be computed as `today + 16`, so exactly one date --
+    the one upstream refuses with a 400 -- got past the guard and onto the wire.
+    """
+    seen: list[httpx.Request] = []
+    last = TODAY + timedelta(days=FORECAST_DAYS - 1)
+
+    async with make_client(happy_handler(seen)) as client:
+        result = await get_weather_forecast(
+            "Chicago", last.isoformat(), last.isoformat(), client=client, today=TODAY
+        )
+
+    assert result.ok is True
+    assert seen[1].url.params["end_date"] == last.isoformat()
+
+
+async def test_the_day_after_the_window_never_reaches_the_wire() -> None:
     calls: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
         return httpx.Response(200, json=GEO_PAYLOAD)
 
-    far_start = TODAY + timedelta(days=MAX_FORECAST_DAYS + 5)
+    just_past = TODAY + timedelta(days=FORECAST_DAYS)
+    async with make_client(handler) as client:
+        result = await get_weather_forecast(
+            "Chicago", just_past.isoformat(), just_past.isoformat(), client=client, today=TODAY
+        )
+
+    assert calls == []
+    # ok, not an error: no forecast exists yet, so there is nothing to retry and nothing
+    # went wrong. Reporting it as a failure is what put "weather service unavailable"
+    # plus a raw upstream URL on screen for "3 days in Los Angeles next month".
+    assert result.ok is True
+    assert result.error is None
+    assert result.days == []
+    assert "no forecast yet" in result.note
+    assert "seasonal norms" in result.note
+
+
+async def test_a_trip_a_month_out_succeeds_with_nothing_to_show() -> None:
+    """The product's most ordinary request, and the one this broke on."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=GEO_PAYLOAD)
+
+    far_start = TODAY + timedelta(days=30)
     async with make_client(handler) as client:
         result = await get_weather_forecast(
             "Chicago",
@@ -167,9 +210,43 @@ async def test_dates_beyond_horizon_skip_the_network() -> None:
             today=TODAY,
         )
 
-    assert result.ok is False
-    assert "beyond the forecast horizon" in result.error
+    assert result.ok is True
     assert calls == []
+
+
+async def test_a_trip_straddling_the_horizon_says_which_days_are_missing() -> None:
+    # The partial answer is the one most likely to be read as a whole one.
+    seen: list[httpx.Request] = []
+    start = TODAY + timedelta(days=FORECAST_DAYS - 3)
+
+    async with make_client(happy_handler(seen)) as client:
+        result = await get_weather_forecast(
+            "Chicago",
+            start.isoformat(),
+            (start + timedelta(days=6)).isoformat(),
+            client=client,
+            today=TODAY,
+        )
+
+    assert result.ok is True
+    horizon = (TODAY + timedelta(days=FORECAST_DAYS - 1)).isoformat()
+    assert seen[1].url.params["end_date"] == horizon
+    assert horizon in result.note
+    assert "seasonal norms" in result.note
+
+
+async def test_a_range_inside_the_window_carries_no_note() -> None:
+    async with make_client(happy_handler()) as client:
+        result = await get_weather_forecast(
+            "Chicago",
+            TODAY.isoformat(),
+            (TODAY + timedelta(days=2)).isoformat(),
+            client=client,
+            today=TODAY,
+        )
+
+    assert result.ok is True
+    assert result.note is None
 
 
 async def test_past_dates_report_out_of_range() -> None:

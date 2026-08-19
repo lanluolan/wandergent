@@ -12,6 +12,7 @@ norms") rather than as an exception.
 
 import logging
 from datetime import date, timedelta
+from typing import NamedTuple
 
 import httpx
 from pydantic import BaseModel
@@ -24,8 +25,13 @@ logger = logging.getLogger(__name__)
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-# Open-Meteo serves at most 16 days ahead on the free forecast endpoint.
-MAX_FORECAST_DAYS = 16
+# Open-Meteo serves 16 days on the free forecast endpoint, counted *inclusive of today*,
+# so the last date it answers for is today + 15. Asking for today + 16 is a 400, not an
+# empty result -- which is exactly how this was wrong before: the horizon was computed as
+# `today + 16`, so the one date upstream refuses was the one date the guard let through.
+# The old test picked `horizon + 5` and never touched the boundary.
+FORECAST_DAYS = 16
+LAST_FORECAST_OFFSET = FORECAST_DAYS - 1
 
 # Guard against an LLM asking for a whole season in one call.
 MAX_REQUESTED_DAYS = 16
@@ -82,9 +88,29 @@ class DailyForecast(BaseModel):
     precipitation_probability_pct: int | None = None
 
 
-class WeatherForecast(ToolOutcome):
-    """Weather tool result. `days` may be empty even when `ok` is False."""
+class _Window(NamedTuple):
+    """The slice of a requested range that has a forecast, and what to say about the rest.
 
+    `start` is None when no day in the range does -- either the request is in the past
+    (an error) or entirely beyond the horizon (a note).
+    """
+
+    start: date | None
+    end: date | None
+    error: str | None = None
+    note: str | None = None
+
+
+class WeatherForecast(ToolOutcome):
+    """Weather tool result. `days` may be empty even when `ok` is True.
+
+    `note` carries what the planner needs to know about *missing* days without calling
+    the lookup a failure -- no forecast exists this far out, so there is nothing to
+    retry and nothing went wrong. It is serialised into the tool reply, so the model
+    reads it and can fall back to seasonal norms rather than inventing a forecast.
+    """
+
+    note: str | None = None
     city: str
     resolved_name: str | None = None
     latitude: float | None = None
@@ -100,9 +126,10 @@ WEATHER_TOOL_SCHEMA: dict = {
         "name": "get_weather_forecast",
         "description": (
             "Get the daily weather forecast for a city over a date range. Use it to decide "
-            "whether outdoor activities are viable on a given day. Only covers up to 16 days "
-            "ahead; for later dates it returns no data and the plan should rely on seasonal "
-            "norms instead."
+            "whether outdoor activities are viable on a given day. Forecasts exist only for "
+            "the next 16 days including today; asking about later dates succeeds but returns "
+            "no days and a note saying so, and the plan should then rely on seasonal norms "
+            "rather than on invented weather."
         ),
         "parameters": {
             "type": "object",
@@ -191,28 +218,48 @@ def _to_daily_forecasts(daily: dict) -> list[DailyForecast]:
     return days
 
 
-def _clamp_range(start: date, end: date, today: date) -> tuple[date, date, str | None]:
-    """Clip a requested range to the forecast window.
+def _clamp_range(start: date, end: date, today: date) -> _Window:
+    """Clip a requested range to the days Open-Meteo actually answers for.
 
-    Returns the usable range plus a note when it had to be trimmed, or a reason when
-    nothing at all is available.
+    Distinguishes two things the caller must treat differently. A range in the past is a
+    mistake in the request -- there is no forecast backwards and the model should fix the
+    dates. A range beyond the horizon is the *normal* case for a trip planned a month out:
+    nothing is wrong, the data simply does not exist yet, so it comes back as a note rather
+    than an error and the plan falls back to seasonal norms.
     """
-    horizon = today + timedelta(days=MAX_FORECAST_DAYS)
+    horizon = today + timedelta(days=LAST_FORECAST_OFFSET)
     if end < today:
-        return start, end, "requested dates are in the past; the forecast only covers today onward"
+        return _Window(
+            None,
+            None,
+            error="requested dates are in the past; the forecast only covers today onward",
+        )
     if start > horizon:
-        return (
-            start,
-            end,
-            f"requested dates are more than {MAX_FORECAST_DAYS} days ahead, "
-            "which is beyond the forecast horizon",
+        return _Window(
+            None,
+            None,
+            note=(
+                f"no forecast yet: {start.isoformat()} is beyond the {FORECAST_DAYS}-day "
+                f"window, which ends {horizon.isoformat()}. Plan on seasonal norms for "
+                "this destination and say so rather than stating a forecast."
+            ),
         )
 
     clamped_start = max(start, today)
     clamped_end = min(end, horizon)
     if (clamped_end - clamped_start).days >= MAX_REQUESTED_DAYS:
         clamped_end = clamped_start + timedelta(days=MAX_REQUESTED_DAYS - 1)
-    return clamped_start, clamped_end, None
+
+    note = None
+    if end > clamped_end:
+        # Said explicitly, because a partial answer is the case most likely to be read as
+        # a whole one: the trip runs past the horizon and the later days have no forecast.
+        note = (
+            f"forecast covers {clamped_start.isoformat()} to {clamped_end.isoformat()} only; "
+            f"later days of the trip are beyond the {FORECAST_DAYS}-day window, so use "
+            "seasonal norms for those."
+        )
+    return _Window(clamped_start, clamped_end, note=note)
 
 
 async def get_weather_forecast(
@@ -226,8 +273,9 @@ async def get_weather_forecast(
 ) -> WeatherForecast:
     """Look up the daily forecast for `city` between the two dates.
 
-    Never raises for an upstream problem: a timeout, an HTTP error, an unknown city
-    or an out-of-range date range all come back as `ok=False` with a reason.
+    Never raises for an upstream problem: a timeout, an HTTP error or an unknown city
+    all come back as `ok=False` with a reason. Dates beyond the forecast window are not
+    a problem at all -- they come back `ok=True` with no days and a note.
     `client` is injectable so tests can run without touching the network.
     """
     if client is not None:
@@ -258,9 +306,15 @@ async def _forecast(
     if end < start:
         return WeatherForecast(ok=False, city=city, error="end_date is before start_date")
 
-    start, end, reason = _clamp_range(start, end, today or date.today())
-    if reason is not None:
-        return WeatherForecast(ok=False, city=city, error=reason)
+    window = _clamp_range(start, end, today or date.today())
+    if window.error is not None:
+        return WeatherForecast(ok=False, city=city, error=window.error)
+    if window.start is None or window.end is None:
+        # Not a failure: a trip planned a month out simply has no forecast yet. Reporting
+        # it as one put "weather service unavailable" plus a raw upstream URL on the
+        # traveller's screen for the most ordinary request this product takes.
+        return WeatherForecast(ok=True, city=city, note=window.note)
+    start, end = window.start, window.end
 
     try:
         place = await _geocode(client, city, language)
@@ -286,6 +340,7 @@ async def _forecast(
     return WeatherForecast(
         ok=True,
         city=city,
+        note=window.note,
         resolved_name=place.get("name"),
         latitude=latitude,
         longitude=longitude,

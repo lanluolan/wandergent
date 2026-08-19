@@ -28,7 +28,7 @@ from mcp.server import MCPServer
 from app.tools.maps import MAX_PLACES, PlacesResult, TravelTime
 from app.tools.maps import get_travel_time as _get_travel_time
 from app.tools.maps import search_places as _search_places
-from app.tools.weather import MAX_FORECAST_DAYS, WeatherForecast
+from app.tools.weather import FORECAST_DAYS, WeatherForecast
 from app.tools.weather import get_weather_forecast as _get_weather_forecast
 
 server = MCPServer(
@@ -48,10 +48,10 @@ server = MCPServer(
     title="Daily weather forecast",
     description=(
         "Daily weather for a city over a date range, for deciding whether outdoor plans are "
-        f"viable. Covers at most {MAX_FORECAST_DAYS} days ahead; beyond that it returns "
-        "ok=false with a reason rather than an error, so the caller can fall back to seasonal "
-        "norms. Never raises: timeouts, unknown cities and upstream failures all come back as "
-        "ok=false."
+        f"viable. Forecasts exist for {FORECAST_DAYS} days counting today; a later date is "
+        "not a failure -- it returns ok=true with no days and a note saying so, so the "
+        "caller falls back to seasonal norms instead of inventing weather. Never raises: "
+        "timeouts, unknown cities and upstream failures all come back as ok=false."
     ),
 )
 async def get_weather_forecast(
