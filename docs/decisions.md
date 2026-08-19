@@ -1432,3 +1432,39 @@ found the ninth in one run.
 What is still not covered: the view models' own orchestration -- what they do with a repository
 result, how they sequence requests. Reaching that needs them to be constructible, which means
 taking dependencies as constructor arguments instead of building them from an `Application`.
+
+## 2026-08-18 -- A clean eval baseline, and what it says the problem actually is
+
+Three runs of the five-case smoke subset against a frozen tree (`0a4bf9a`), so the numbers
+describe one system rather than five prompt states. Raw records are kept locally.
+
+**valid-itinerary rate = 5/15 = 33%** (40%, 40%, 20% per run); 88/105 checks; 88 LLM calls;
+**1.33M tokens** for the baseline alone. The figure lands on the same 33% that five mixed runs
+suggested earlier, which is reassuring about the estimate and damning about the state.
+
+Per case, over three runs: `memory-recall` 3/3, `revision` 1/3, `specifics` 1/3,
+**`budget-tight` 0/3 and `exclusions` 0/3**. The last two are not noise -- they fail every
+time, which means something systematic rather than an unlucky sample.
+
+**The failure is concentrated far harder than expected.** Of 32 blocking violations,
+`insufficient_transfer` accounts for **24**, `over_budget` 5, `outside_opening_hours` 3.
+The opening-hours work from 2026-08-17 appears to have taken: it was the second-largest
+category before and is now nearly absent.
+
+And within the transfers, the shape is specific. Actual gaps left by the model:
+
+| gap the plan left | times |
+|---|---|
+| **0 minutes** | **17** |
+| 5 minutes | 3 |
+| 10 minutes | 3 |
+
+The needed times are mostly small -- 19 of 23 are between 5 and 14 minutes. So the dominant
+failure is not a bad estimate of travel time. **The model ends one activity at the exact minute
+the next begins, over and over**, and what it needed to leave was ten minutes.
+
+That reframes the fix. Feeding measured travel times in before generation was the planned
+lever, and it addresses the four large hops; it does nothing about seventeen schedules that
+left no gap at all. A zero gap needs no measurement to detect, and the validator already
+computes the exact shortfall -- which makes a deterministic repair in code the obvious first
+move, in keeping with this project's own rule that the constraint layer is code, not a prompt.
