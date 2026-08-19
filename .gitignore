@@ -1,0 +1,59 @@
+# ---- Secrets / env ----
+.env
+*.env
+!.env.example
+
+# ---- Local databases (user memory; contains personal preferences) ----
+*.db
+*.db-wal
+*.db-shm
+# Backups too. `*.db` alone does not match `wandergent-memory.db.bak`, and the backup
+# holds exactly the personal data the rule above exists to keep out of the repository.
+*.bak
+*.db.*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+.DS_Store
+
+# ---- Android ----
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+# gradle-wrapper.jar is deliberately NOT ignored: Gradle requires it in the repo,
+# or `./gradlew` cannot run on a fresh clone or a CI runner.
+
+# ---- Local-only working files (kept on disk, never published) ----
+# Personal job-search material: resume bullets and scripted interview answers.
+# Valuable, but it is not project documentation and does not belong to a reader.
+docs/resume-highlights.md
+# AI-assistant workflow log. Records this machine's layout (install paths, user
+# directories) and approvals that mean nothing outside this checkout.
+PENDING-APPROVAL.md
+# Inward-facing docs. Nothing here is secret; they are written for whoever is building this
+# rather than for whoever is reading it, so they stay local. `decisions.md` and `api.md` are
+# deliberately NOT in this list -- the reasoning and the client contract are the point.
+CLAUDE.md
+docs/progress.md
+docs/open-issues.md
+# Retired baseline: its figures describe a subset and a constraint layer that no longer exist,
+# so publishing it would invite someone to read stale numbers as current.
+docs/eval-baseline.json
+# Raw eval records. Local while the eval is failing; publishing them makes `decisions.md`'s
+# eval analysis checkable, which is worth doing once the subset is green again.
+docs/eval-runs/
+
+# ---- JVM crash logs ----
+hs_err_pid*.log

@@ -1,0 +1,21 @@
+# .editorconfig tells editors what to write; this tells git what to store.
+# Both are needed: without it, committing from Windows can bake CRLF into
+# `gradlew`, which then fails on a Linux CI runner with a confusing error.
+
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+gradlew text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.jar binary
+*.keystore binary
+*.apk binary
+*.aab binary
+*.db binary
