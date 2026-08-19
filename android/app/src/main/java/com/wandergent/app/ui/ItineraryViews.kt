@@ -195,10 +195,15 @@ private fun SaveButton(saved: Boolean, onSave: () -> Unit) {
  */
 @Composable
 private fun WarningsCard(warnings: List<RunWarning>) {
+    // Deduplicated on the *rendered* sentence, not on the code. Collapsing the three
+    // budget codes into one sentence is what creates the duplicate: a run that both
+    // spends its call budget and drops a call emits two distinct codes that read
+    // identically, and the reader gets the same caveat twice. Seen on a live plan.
+    val lines = warnings.map(::warningText).distinct()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            warnings.forEach {
-                Text("⚠ ${warningText(it)}", style = MaterialTheme.typography.bodySmall)
+            lines.forEach {
+                Text("⚠ $it", style = MaterialTheme.typography.bodySmall)
             }
         }
     }

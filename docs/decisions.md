@@ -1572,3 +1572,19 @@ than sent empty. One pure function, testable without a server -- there is no Moc
 in this project. `HttpLoggingInterceptor` stays at `BASIC` for a reason now, not just for
 brevity: `HEADERS` would print the key.
 
+## Collapsing warning codes into one sentence needs a dedupe (2026-08-19)
+
+Found on device, not in tests. `warningText` maps the three tool-budget codes
+(`tool_calls_dropped`, `tool_calls_spent`, `tool_rounds_spent`) to a single traveller
+-facing sentence on purpose -- which ceiling the run hit is a real distinction to whoever
+tunes the tool loop and none at all to someone deciding whether to check a closing time.
+
+What the collapse also does is *create duplicates*. A live LA run spent its call budget
+and dropped a call, so two distinct codes arrived and rendered identically: the same
+caveat printed twice, one under the other.
+
+`WarningsCard` now `distinct()`s on the rendered text. Deduping by code would not have
+helped -- the codes genuinely differ; it is the rendering that makes them the same. The
+test pins the invariant the card depends on: the three budget codes must render to one
+distinct string.
+

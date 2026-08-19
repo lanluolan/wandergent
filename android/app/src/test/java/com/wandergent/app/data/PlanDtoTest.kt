@@ -128,6 +128,19 @@ class PlanDtoTest {
     }
 
     @Test
+    fun `the three budget codes collapse to one sentence, so the card must dedupe`() {
+        // Seen on a live plan: the run spent its call budget *and* dropped a call, so two
+        // distinct codes arrived and rendered identically -- the same caveat printed
+        // twice, one under the other. The collapse is deliberate; what it also creates is
+        // duplicates, and `WarningsCard` distinct()s on this rendered text because of it.
+        val budgetCodes = listOf("tool_calls_dropped", "tool_calls_spent", "tool_rounds_spent")
+
+        val rendered = budgetCodes.map { warningText(RunWarning(code = it, detail = "dev wording")) }
+
+        assertEquals(1, rendered.distinct().size, rendered.toString())
+    }
+
+    @Test
     fun `an unknown warning code from a newer backend renders its detail`() {
         val body = """
             {"itinerary": null, "tool_calls": [], "raw_reply": null,
