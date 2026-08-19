@@ -276,7 +276,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: StreamFailure) {
                 // Nothing arrived at all: the transport may not survive SSE (a proxy
                 // buffering the response, for instance), so try the plain endpoint.
-                if (events == 0) {
+                // See [shouldFallBack] for when that is and is not worth doing.
+                if (shouldFallBack(events, e.status)) {
                     fallBackToNonStreaming(id, request, previous, e.message ?: "Streaming failed")
                 } else {
                     val failure = describeFailure(e.status, e.detail)
@@ -309,6 +310,26 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private fun reduce(current: LiveProgress, event: PlanEventDto): LiveProgress =
         reduceProgress(current, event)
 }
+
+/**
+ * Whether a stream that failed should be retried on the plain endpoint.
+ *
+ * Lifted out for the same reason as the reducer below: the decision is worth pinning and
+ * is unreachable from a JVM test while it lives inside an `AndroidViewModel`.
+ *
+ * The fallback exists for transports that cannot carry SSE -- a proxy that buffers the
+ * response into one lump, most often. Its signal is that *nothing* arrived: an event
+ * means the stream works, and whatever went wrong afterwards is not a transport problem.
+ *
+ * A 4xx is the second case that is not a transport problem, and it does not announce
+ * itself as one: the server answered, in full, with a refusal -- a missing API key, a
+ * rejected request, a spent allowance. The plain endpoint runs the same checks and
+ * refuses identically, so the retry can only ever cost a second request. For a 429 it
+ * costs more: that request is counted against the caller's allowance as well, so hitting
+ * the limit once spends two slices of it.
+ */
+internal fun shouldFallBack(eventsSeen: Int, status: Int?): Boolean =
+    eventsSeen == 0 && status !in 400..499
 
 /**
  * The stream reducer, lifted out of [PlanViewModel] so it can be tested.
