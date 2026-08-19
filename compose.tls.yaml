@@ -1,0 +1,52 @@
+# The deployed stack: the same backend, but reachable only through Caddy over HTTPS.
+#
+#   WANDERGENT_DOMAIN=trips.example.com \
+#   WANDERGENT_ACME_EMAIL=you@example.com \
+#   docker compose -f compose.tls.yaml up -d --build
+#
+# Note the explicit `-f`: this file replaces `compose.yaml` rather than layering on it.
+# It `extends` the backend service so the build, the volume and the database paths are
+# defined once, and then **removes the published port**. That removal is the point --
+# with it, the only way in is through TLS; without it, an unencrypted API carrying
+# bearer tokens sits on the host's public interface and the certificate is decoration.
+#
+# Everything `compose.yaml` says about this being one process on one box still applies.
+
+services:
+  backend:
+    extends:
+      file: compose.yaml
+      service: backend
+    # `!reset` rather than an empty list: Compose *merges* `ports` between files, so an
+    # override that looks like it clears the mapping would in fact leave it in place.
+    ports: !reset null
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: wandergent-caddy
+    restart: unless-stopped
+    depends_on:
+      backend:
+        # Waits for the health check, not just for the process to exist, so Caddy does
+        # not spend the first seconds after a deploy returning 502 to real requests.
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # No defaults. A wrong domain makes Caddy request a certificate for a name it does
+      # not control, over and over, until Let's Encrypt rate limits the address.
+      WANDERGENT_DOMAIN: ${WANDERGENT_DOMAIN:?set the domain this is served on}
+      WANDERGENT_ACME_EMAIL: ${WANDERGENT_ACME_EMAIL:?set the email for certificate notices}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account key. Losing this volume is not fatal but it
+      # means re-issuing on every restart, which is how an address reaches Let's
+      # Encrypt's rate limit without doing anything obviously wrong.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  wandergent-data:
+  caddy-data:
+  caddy-config:

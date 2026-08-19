@@ -1,0 +1,44 @@
+# TLS and the public edge.
+#
+# Caddy rather than nginx for one reason: certificates. It obtains and renews them from
+# Let's Encrypt on its own, which removes the step most likely to be forgotten -- the
+# renewal, ninety days after anyone last thought about it.
+#
+# `WANDERGENT_DOMAIN` and `WANDERGENT_ACME_EMAIL` come from the environment. There is no
+# default domain: a wrong one means Caddy asks a certificate authority for a name it does
+# not control, repeatedly, and gets itself rate limited.
+
+{
+	email {$WANDERGENT_ACME_EMAIL}
+}
+
+{$WANDERGENT_DOMAIN} {
+	# The backend is not published on the host at all in this configuration -- it is
+	# reachable only on the compose network, by this name. That is what makes the TLS
+	# mandatory rather than merely available: there is no plaintext port to bypass it.
+	reverse_proxy backend:8000
+
+	# A planning run streams for minutes. The default flush interval would buffer the
+	# SSE events into one lump delivered at the end, which looks exactly like a hang and
+	# would send the client to its non-streaming fallback every time.
+	@stream path /plan/stream
+	reverse_proxy @stream backend:8000 {
+		flush_interval -1
+	}
+
+	encode gzip
+
+	header {
+		# The API is consumed by an app, never rendered as a page, so the browser
+		# protections that matter are the ones that stop it being treated as one.
+		X-Content-Type-Options nosniff
+		# Bearer tokens travel on every request; a single plaintext downgrade leaks one.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

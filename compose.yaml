@@ -1,0 +1,52 @@
+# Local container run, and the shape a single-box deploy takes.
+#
+#   docker compose up --build        # start, rebuilding if the source changed
+#   docker compose logs -f backend   # follow
+#   docker compose down              # stop, keeping the data volume
+#   docker compose down -v           # stop and DELETE every account and shared trip
+#
+# **This is one process on one box, and that is not an accident.** The rate limiter counts
+# in process memory and the three databases are SQLite files on a local disk, so a second
+# replica would double every limit and contend for the same write lock. Redis and
+# PostgreSQL are the Phase 4 work that lifts both constraints; until then, scaling this
+# horizontally silently breaks it.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    # Named, so `docker compose down && up` finds the same container and the same volume
+    # rather than leaving orphans behind on a small box.
+    container_name: wandergent-backend
+    restart: unless-stopped
+
+    # Secrets stay out of the image and out of this file. `required: false` so the stack
+    # still starts without one -- `/health` works with no keys at all, and a container
+    # that refuses to boot cannot be inspected. Planning requests then fail with 500,
+    # which is what `app/main.py`'s lifespan warning is for.
+    env_file:
+      - path: ./backend/.env
+        required: false
+
+    environment:
+      # Repeated from the Dockerfile so this file alone tells you where the data lives.
+      # Anyone reading a compose file to find out what to back up should not have to open
+      # a Dockerfile to learn that the answer is a volume.
+      MEMORY_DB_PATH: /data/wandergent-memory.db
+      COMMUNITY_DB_PATH: /data/wandergent-community.db
+      AUTH_DB_PATH: /data/wandergent-auth.db
+
+    volumes:
+      # The whole reason this project cannot run on a scale-to-zero container platform:
+      # accounts, sessions and every shared itinerary are files. Lose the volume and they
+      # are gone, without an error to say so.
+      - wandergent-data:/data
+
+    ports:
+      # Bound to loopback on purpose. In front of this belongs a reverse proxy doing TLS;
+      # publishing 8000 on every interface would put an unencrypted API carrying bearer
+      # tokens on the open internet. Change to "8000:8000" only behind something else.
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  wandergent-data:

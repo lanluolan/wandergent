@@ -1,0 +1,28 @@
+# What must never reach the build context.
+#
+# Not tidiness -- `.env` holds the LLM and Maps keys, and anything copied into an image
+# is readable by anyone who can pull it, including through a deleted layer. The `.db`
+# files are the same problem wearing a different hat: they hold password hashes and
+# session tokens.
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.db.*
+
+# Rebuilt inside the image; copying a host venv in would bring the host's platform with
+# it and quietly produce an image that only works on this machine.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Not needed to run the service.
+tests/
+evals/
+scripts/
+docs/
+.git/
