@@ -307,6 +307,18 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Fold one event into the live progress shown while the plan is being built. */
     private fun reduce(current: LiveProgress, event: PlanEventDto): LiveProgress =
+        reduceProgress(current, event)
+}
+
+/**
+ * The stream reducer, lifted out of [PlanViewModel] so it can be tested.
+ *
+ * It touches nothing but its two arguments, but living inside an `AndroidViewModel` made it
+ * unreachable from a JVM test -- constructing the view model means constructing Room, DataStore
+ * and Retrofit. Everything the progress UI shows is decided here, so this is the piece worth
+ * pinning.
+ */
+internal fun reduceProgress(current: LiveProgress, event: PlanEventDto): LiveProgress =
         when (event.type) {
             PlanEventDto.STAGE -> current.copy(stage = event.message)
 
@@ -317,17 +329,28 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
 
-            PlanEventDto.TOOL_RESULT -> current.copy(
-                tools = current.tools.map { tool ->
-                    // Match the first still-running call with this name: tools run
-                    // concurrently, so results can arrive out of order.
-                    if (tool.name == event.name && tool.ok == null) {
-                        tool.copy(ok = event.ok, error = event.error)
-                    } else {
-                        tool
-                    }
-                },
-            )
+            PlanEventDto.TOOL_RESULT -> {
+                // Close the *first* still-running call with this name, and only that one.
+                // Tools run concurrently, so two search_places calls can be open at once;
+                // a `map` over the whole list closed both on the first result, reporting
+                // work as finished that was still in flight. Found by the reducer tests.
+                val target = current.tools.indexOfFirst {
+                    it.name == event.name && it.ok == null
+                }
+                if (target < 0) {
+                    current
+                } else {
+                    current.copy(
+                        tools = current.tools.mapIndexed { index, tool ->
+                            if (index == target) {
+                                tool.copy(ok = event.ok, error = event.error)
+                            } else {
+                                tool
+                            }
+                        },
+                    )
+                }
+            }
 
             PlanEventDto.COMPOSING -> current.copy(
                 writing = (current.writing + event.message.orEmpty())
@@ -338,4 +361,3 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
 
             else -> current
         }
-}

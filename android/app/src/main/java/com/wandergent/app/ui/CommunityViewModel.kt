@@ -293,5 +293,17 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /** True when this card is the signed-in account's own post. */
-    fun isMine(card: SharedPlanCard): Boolean = accountId != null && accountId == card.authorId
+    fun isMine(card: SharedPlanCard): Boolean = ownsCard(accountId, card)
 }
+
+/**
+ * Whether the signed-in account wrote this post, lifted out of [CommunityViewModel] to be
+ * testable.
+ *
+ * The comparison is deliberately narrow. `authorId` is the **server** account id; the app also
+ * carries a local Room row id, and comparing the two was a live bug that showed other people's
+ * posts as the reader's own, complete with a withdraw button. A blank account id is not a match
+ * either: signed out is not "everything is mine".
+ */
+internal fun ownsCard(accountId: String?, card: SharedPlanCard): Boolean =
+    !accountId.isNullOrEmpty() && accountId == card.authorId

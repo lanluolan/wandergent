@@ -1400,3 +1400,35 @@ anticipated; the mode bit is the other half, and no `.gitattributes` rule can ex
 Same shape as the SDK package id an hour earlier: **both were invisible on the machine that
 wrote them and needed a runner that starts from nothing.** That is the argument for CI
 stated as evidence rather than as principle.
+
+## 2026-08-18 -- The first ViewModel tests found a bug in their first run
+
+The view models had no tests, and had produced every recent bug. The reason was structural:
+each one is an `AndroidViewModel` that builds Room, DataStore and Retrofit in its own
+constructor, so a JVM test cannot construct one at all.
+
+Rather than add Robolectric or a DI container to reach them, the two pieces of pure logic
+were lifted out to internal top-level functions and tested directly: `reduceProgress`, which
+folds the SSE stream into what the screen shows, and `ownsCard`, which decides whether a
+community post belongs to the reader.
+
+**`reduceProgress` was wrong.** Closing a tool call read:
+
+    tools = current.tools.map { tool ->
+        if (tool.name == event.name && tool.ok == null) tool.copy(ok = event.ok) else tool
+    }
+
+The comment above it said "match the first still-running call with this name". `map` matches
+*every* one. Tools run concurrently, so two `search_places` calls are routinely open at once,
+and a single result closed both -- the UI reported work as finished while it was still in
+flight, and a later result had nothing left to close. Now `indexOfFirst` picks the target and
+`mapIndexed` replaces only it.
+
+Worth noting how it hid: the code looks correct, the comment states the correct intent, and
+the failure needs two same-named calls open simultaneously, which is common live and appears
+in no scripted test. It took eight bugs found by hand before this layer got the tests that
+found the ninth in one run.
+
+What is still not covered: the view models' own orchestration -- what they do with a repository
+result, how they sequence requests. Reaching that needs them to be constructible, which means
+taking dependencies as constructor arguments instead of building them from an `Application`.
