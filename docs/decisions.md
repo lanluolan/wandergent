@@ -1364,3 +1364,20 @@ Verified live on the device with `MAX_TOOL_ROUNDS=1`, which guarantees the warni
 the card read *"Built on less research than usual: the planner hit its lookup limit before
 it had checked everything. Worth confirming opening times and prices yourself."* The same
 plan shipped five unresolved violations, and they appeared once, on the validation card.
+
+## 2026-08-18 -- CI's first real run: the SDK platform id is not what the API level is
+
+`ci.yml` had installed `platforms;android-37` for a `compileSdk = 37` build. That package
+does not exist. From API 37 the platform packages are published with a minor version --
+`platforms;android-37.0`, `platforms;android-37.1`, `platforms;android-37.2-beta1` -- and
+there is no bare `android-37`, so `sdkmanager` answers `Failed to find package` and exits 1.
+API 35 and 36 still publish a bare id alongside the qualified one, which is why the pattern
+looks safe right up until the version where it isn't.
+
+`compileSdk = 37` resolves to the `.0` minor; confirmed rather than assumed by grepping the
+local build outputs for the platform path it actually used (`platforms/android-37.0`), since
+this machine has both minors installed and would have built fine either way.
+
+**This is the class of bug CI exists to find.** It was invisible locally -- the SDK was
+already installed by Android Studio, so nothing ever resolved the package id from the
+network. The failure needed a machine that starts with nothing.

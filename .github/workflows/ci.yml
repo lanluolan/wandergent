@@ -90,7 +90,12 @@ jobs:
       # compileSdk is 37, which a runner image may not carry yet. Installing it
       # explicitly turns "missing platform" into a named failure instead of a Gradle
       # stack trace 40 lines deep.
-      - run: sdkmanager --install "platforms;android-37" "build-tools;37.0.0"
+      #
+      # The id is `android-37.0`, not `android-37`. From API 37 the platform packages
+      # carry a minor version, and only the minor-qualified ids are published -- a bare
+      # `platforms;android-37` fails with "Failed to find package". `compileSdk = 37`
+      # resolves to the `.0` minor, which is what this installs.
+      - run: sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0"
 
       - run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
 
