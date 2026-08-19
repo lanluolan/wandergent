@@ -38,16 +38,20 @@ fail with `CLEARTEXT communication not permitted` before any request is sent.
 
 ## Bringing your own LLM key
 
-Both planning endpoints accept the caller's own LLM account as headers. Without them the
-backend falls back to the key in its own `.env` -- **if it has one**. A backend run for
-other people is expected not to: leaving `OPENAI_API_KEY` empty is a supported mode, and
-is how the operator avoids paying for strangers' tokens.
+Both planning endpoints take the caller's LLM account as headers. **A deployment normally
+has none of its own** -- key, endpoint and model all default to empty -- so in practice all
+three headers are required; the `.env` values exist for a developer box, where evals and
+smoke scripts call the orchestrator directly. Whatever the server does have, it lends.
 
 | Header | Required | Meaning |
 |---|---|---|
-| `X-LLM-Api-Key` | yes, to use any of these | The caller's key. Sent per request; never stored server-side. |
-| `X-LLM-Model` | no | Model name. Defaults to the server's `OPENAI_MODEL`. |
-| `X-LLM-Base-Url` | no | OpenAI-compatible endpoint. Defaults to the server's `OPENAI_BASE_URL`. |
+| `X-LLM-Api-Key` | always | The caller's key. Sent per request; never stored server-side. |
+| `X-LLM-Model` | unless the server sets `OPENAI_MODEL` | Model name, e.g. `gpt-4o`. |
+| `X-LLM-Base-Url` | unless the server sets `OPENAI_BASE_URL` | OpenAI-compatible endpoint. |
+
+Each missing piece is its own `400` naming that piece — *"this server has no LLM endpoint
+of its own, so yours is required"*. A generic failure would send someone back to the key
+they just typed, which is the one part that was right.
 
 Headers, not body fields: a key in the body ends up in request logs and in FastAPI's
 validation-error echo, and `PlanRequest` is the schema this document publishes.
@@ -56,10 +60,9 @@ validation-error echo, and `PlanRequest` is the schema this document publishes.
 server's key for a request that asked not to would spend the operator's money, and from
 the client it would look like a setting that never takes effect.
 
-**No key on either side is `400`**, with a sentence aimed at the traveller rather than at
-whoever wrote `.env`: *"this server has no AI account of its own, so planning needs yours.
-Open You -> AI model and add an API key."* A `5xx` would tell the client to retry something
-retrying cannot fix.
+**Every one of these is a `400`, not a `5xx`**, and every sentence is aimed at the traveller
+rather than at whoever wrote `.env` — *"Open You -> AI model and add an API key."* A `5xx`
+would tell the client to retry something retrying cannot fix.
 
 **`X-LLM-Base-Url` must be one the operator allowed.** Always permitted: the server's own
 `OPENAI_BASE_URL`, plus the well-known OpenAI-compatible hosts — OpenAI, Anthropic, Gemini,

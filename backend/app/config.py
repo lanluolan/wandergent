@@ -16,18 +16,27 @@ class Settings(BaseSettings):
     app_name: str = "Wandergent"
     debug: bool = False
 
-    # LLM. The endpoint is OpenAI-compatible; these defaults are what the project
-    # actually runs against, not the SDK's factory values -- a default that names a
-    # provider we do not use is a lie the next reader has to discover the hard way.
-    # No default for the key: a secret must be supplied, never silently defaulted.
+    # LLM. The endpoint is OpenAI-compatible.
+    #
+    # All three are empty by default, and that is the shipping configuration: the model
+    # account belongs to whoever is travelling, not to whoever runs the server. A caller
+    # supplies key, endpoint and model per request; these exist so a developer can point
+    # a local backend at their own provider for evals and smoke runs, which call the
+    # orchestrator directly and never send a header.
+    #
+    # Naming a provider here as a "sensible default" is what this avoids. A deployment
+    # that set none of them would otherwise send every key-only caller to whichever
+    # endpoint happened to be baked in, which is neither what they asked for nor
+    # something they could see.
     openai_api_key: str = ""
-    openai_base_url: str = "https://api.xiaomimimo.com/v1"
-    openai_model: str = "mimo-v2.5-pro"
+    openai_base_url: str = ""
+    openai_model: str = ""
 
     # Endpoints a caller may point their *own* key at, comma-separated. Empty means
     # `app.agent.llm.DEFAULT_BYOK_BASE_URLS` -- the well-known OpenAI-compatible hosts --
     # and setting it *replaces* that list, which is how an operator narrows it. The
-    # server's own `openai_base_url` is always allowed either way.
+    # server's own `openai_base_url` is added when it is set, which on a deployment
+    # that has no provider of its own it is not -- there the list is the only gate.
     #
     # It stays a closed list because it is an SSRF allowlist: every host on it is a host
     # a stranger can make this machine send a request to. Fixed public API hosts are safe
@@ -37,25 +46,18 @@ class Settings(BaseSettings):
     @field_validator("openai_base_url")
     @classmethod
     def _endpoint_must_be_an_endpoint(cls, value: str) -> str:
-        """Refuse a blank endpoint at boot rather than at the first request.
+        """Empty is fine -- callers bring their own. Malformed is not.
 
-        It carries more weight than it looks: a caller who brings only an API key --
-        the common case now that most callers bring their own -- inherits this as their
-        endpoint, and it is also the one address always on the BYOK allowlist. Blank
-        produces `base_url=''`, which fails per request with an error that names neither
-        the setting nor the cause, and puts an empty string in the allowlist.
+        Unset means "this server has no provider of its own", which is the normal
+        deployment. A value that is present but has no scheme is a typo, and it would
+        otherwise surface per request as a connection error naming neither the setting
+        nor the cause. Config problems belong at boot.
 
-        Unlike a missing `OPENAI_API_KEY`, which is a real deployment mode, there is no
-        deployment in which this is empty on purpose. Leave it unset to get the default;
-        setting it to nothing is a typo.
+        The trailing slash is normalised so the value compares equal to the same
+        endpoint on the BYOK allowlist.
         """
         cleaned = value.strip()
-        if not cleaned:
-            raise ValueError(
-                "OPENAI_BASE_URL is set to an empty value. Remove the line to use the "
-                "default, or give it a full URL such as https://api.openai.com/v1"
-            )
-        if not cleaned.startswith(("http://", "https://")):
+        if cleaned and not cleaned.startswith(("http://", "https://")):
             raise ValueError(
                 f"OPENAI_BASE_URL must start with http:// or https://, got {cleaned!r}"
             )

@@ -1664,3 +1664,37 @@ normalises the trailing slash so the value compares equal to the same endpoint o
 allowlist. Unlike a missing key -- a real deployment mode -- there is no deployment where
 this is empty on purpose, so failing to start is the right response rather than a warning.
 
+## The server has no LLM account, not even a default one (2026-08-19)
+
+Reverses part of the entry immediately above, which had made `OPENAI_BASE_URL` a required
+setting. The premise changed: there will be no `OPENAI_*` values in a deployed `.env` at
+all. Every model call is paid for by the traveller, so the server must not merely tolerate
+having no provider -- it must not *have* one.
+
+`openai_base_url` and `openai_model` used to default to `https://api.xiaomimimo.com/v1`
+and `mimo-v2.5-pro`. That looked like the honest thing to do, and this file argued for it:
+name what the project actually runs on rather than a library's factory value. It stops
+being honest once the account belongs to the caller. A deployment that set nothing would
+send every key-only caller to an endpoint they did not choose and could not see, and the
+first sign of it would be a 401 that reads as "your key is wrong". Both now default to
+empty.
+
+**Which turns "optional" headers into required ones.** `parse_override` fills what it can
+from the server and refuses what it cannot, one field at a time: *"this server has no LLM
+endpoint of its own, so yours is required"*, *"this server has no default model"*. Each
+names the missing field, because a generic failure sends someone back to the API key they
+just typed -- the one part that was right.
+
+**And makes the SSRF allowlist the only gate.** The server's own endpoint was always on
+the list; on a deployment with no provider there is nothing to add, so
+`DEFAULT_BYOK_BASE_URLS` is the entire boundary. Worth stating plainly: that list is now
+load-bearing on its own, not a widening of something else.
+
+The blank-endpoint validator from the previous entry survives in reduced form -- empty is
+legal, a value with no scheme still is not. That half was never about the deployment mode;
+it was about a typo failing per request instead of at boot.
+
+`evals/run.py` and the smoke scripts call the orchestrator directly and have no headers to
+borrow, so they now name all three missing settings up front instead of only the key. A
+developer box keeps its `.env`; nothing else should.
+

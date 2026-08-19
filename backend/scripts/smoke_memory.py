@@ -46,8 +46,19 @@ async def run(request: str, label: str) -> None:
 
 
 async def main() -> int:
-    if not settings.openai_api_key:
-        print("OPENAI_API_KEY is empty. Put your key in backend/.env, then rerun.")
+    missing = [
+        name
+        for name, value in (
+            ("OPENAI_API_KEY", settings.openai_api_key),
+            ("OPENAI_BASE_URL", settings.openai_base_url),
+            ("OPENAI_MODEL", settings.openai_model),
+        )
+        if not value
+    ]
+    if missing:
+        # These run the orchestrator directly, so they cannot borrow a caller's headers
+        # the way the HTTP endpoints do -- a developer box needs its own provider named.
+        print(f"{', '.join(missing)} not set. Put them in backend/.env, then rerun.")
         return 1
 
     removed = await store.forget(USER)

@@ -75,16 +75,26 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     meant to work without a key, and a container that refuses to start cannot be
     inspected. Requests that actually need the model still fail with a 500.
     """
-    if settings.openai_api_key:
+    # Says what callers must supply, which is the question anyone reading this log has.
+    # None of the three being set is the normal deployment, not a mistake: the model
+    # account belongs to the traveller. Requests that arrive without what is missing get
+    # a 400 naming the field, never a 500.
+    missing = [
+        header
+        for header, value in (
+            ("X-LLM-Api-Key", settings.openai_api_key),
+            ("X-LLM-Base-Url", settings.openai_base_url),
+            ("X-LLM-Model", settings.openai_model),
+        )
+        if not value
+    ]
+    if not missing:
         logger.info("LLM configured: %s @ %s", settings.openai_model, settings.openai_base_url)
     else:
-        # Info, not a warning: running without a key is a deployment mode, not a mistake.
-        # It is how the operator serves other people without paying for their tokens --
-        # every caller brings their own. Planning without one is a 400 telling the
-        # traveller where to add it, not a 500.
         logger.info(
-            "no OPENAI_API_KEY -- callers must bring their own (X-LLM-Api-Key). "
-            "Set one in backend/.env if this server should have an account of its own."
+            "bring-your-own-key mode: callers must send %s. Set the matching OPENAI_* "
+            "vars in backend/.env only if this server should have an account of its own.",
+            ", ".join(missing),
         )
 
     if settings.smtp_host:

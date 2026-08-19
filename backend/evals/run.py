@@ -142,8 +142,19 @@ async def main() -> int:
     parser.add_argument("--json", dest="json_path", help="also write the report as JSON")
     args = parser.parse_args()
 
-    if not settings.openai_api_key:
-        print("OPENAI_API_KEY is empty. Put your key in backend/.env, then rerun.")
+    missing = [
+        name
+        for name, value in (
+            ("OPENAI_API_KEY", settings.openai_api_key),
+            ("OPENAI_BASE_URL", settings.openai_base_url),
+            ("OPENAI_MODEL", settings.openai_model),
+        )
+        if not value
+    ]
+    if missing:
+        # These run the orchestrator directly, so they cannot borrow a caller's headers
+        # the way the HTTP endpoints do -- a developer box needs its own provider named.
+        print(f"{', '.join(missing)} not set. Put them in backend/.env, then rerun.")
         return 1
 
     cases = select(tag=None if args.all else "smoke", ids=args.ids)

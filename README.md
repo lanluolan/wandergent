@@ -80,10 +80,11 @@ uv run uvicorn app.main:app --reload
 traveller's own: the app's **You -> AI model** row takes an API key, and optionally a model
 name and endpoint, and sends them per request.
 
-**Running it for other people: leave `OPENAI_API_KEY` empty.** Then every caller brings
-their own account and the operator pays for no tokens at all; planning without a key is a
-400 pointing the traveller at that screen. Keep a key in `.env` for local work and evals,
-where the orchestrator is called directly. Note that the model bill is not the whole bill —
+**A deployment sets none of the three.** Key, endpoint and model all default to empty, so
+every caller brings their own account and the operator pays for no tokens at all; a request
+missing a piece is a 400 naming it and pointing at that screen. Set them in `.env` on a
+developer box — evals and the smoke scripts call the orchestrator directly and have no
+headers to borrow. Note that the model bill is not the whole bill —
 a plan also spends this server's Google Places and Routes quota (~9 + 7 calls of expensive
 SKU), which stays yours, so `MAX_PLANS_PER_DAY` is the ceiling that matters.
 

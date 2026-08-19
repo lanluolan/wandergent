@@ -124,9 +124,7 @@ def allowed_byok_base_urls() -> frozenset[str]:
     Widening it to "anything" would hand strangers this machine as an HTTP client.
     """
     configured = [
-        url.strip().rstrip("/")
-        for url in settings.llm_byok_base_urls.split(",")
-        if url.strip()
+        url.strip().rstrip("/") for url in settings.llm_byok_base_urls.split(",") if url.strip()
     ]
     allowed = configured or [url.rstrip("/") for url in DEFAULT_BYOK_BASE_URLS]
     own = settings.openai_base_url.rstrip("/")
@@ -168,11 +166,23 @@ def parse_override(
             "leave the endpoint unset to use the one it is configured with"
         )
 
-    return LlmOverride(
-        api_key=key,
-        base_url=url or settings.openai_base_url,
-        model=name or settings.openai_model,
-    )
+    # What the server can lend, which on a deployment with no provider of its own is
+    # nothing. Naming the missing field matters: "planning failed" sends someone back to
+    # the key they just typed, which is the one part that was right.
+    endpoint = url or settings.openai_base_url
+    if not endpoint:
+        raise LlmCredentialsError(
+            "this server has no LLM endpoint of its own, so yours is required. "
+            "Add it under You -> AI model, next to your key."
+        )
+    chosen = name or settings.openai_model
+    if not chosen:
+        raise LlmCredentialsError(
+            "this server has no default model, so yours is required. "
+            "Add a model name under You -> AI model, next to your key."
+        )
+
+    return LlmOverride(api_key=key, base_url=endpoint, model=chosen)
 
 
 @dataclass

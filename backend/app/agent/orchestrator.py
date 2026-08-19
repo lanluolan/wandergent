@@ -820,6 +820,14 @@ async def stream_plan(
     """
     llm = client or build_client()
     model = model or settings.openai_model
+    if not model:
+        # Reachable only from a direct caller -- evals, the smoke scripts -- since the
+        # HTTP layer settles the model before it gets here. Sending "" to the API is a
+        # provider-specific error message about an unknown model; this one names the fix.
+        raise PlanningConfigError(
+            "no model was chosen and OPENAI_MODEL is not set; pass model= or put one in "
+            "backend/.env"
+        )
     fast_model = settings.fast_model if fast_model is None else fast_model
     today = today or date.today()
     rounds = max_tool_rounds if max_tool_rounds is not None else settings.max_tool_rounds

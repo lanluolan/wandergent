@@ -319,22 +319,55 @@ def test_a_key_alone_inherits_whatever_the_server_names(monkeypatch) -> None:
     assert override.model == "server-model"
 
 
-def test_a_blank_endpoint_is_refused_at_boot() -> None:
-    # It used to sail through as base_url='' -- failing per request with an error naming
-    # neither the setting nor the cause, and putting an empty string on the allowlist.
-    # Unlike a missing key, there is no deployment where this is empty on purpose.
+def test_an_unset_endpoint_is_the_normal_deployment() -> None:
+    """Empty is not a misconfiguration; it means the traveller supplies the endpoint.
+
+    A malformed one still is. A value present but missing its scheme would otherwise
+    surface per request as a connection error naming neither the setting nor the cause.
+    """
     from app.config import Settings
 
-    with pytest.raises(ValidationError, match="OPENAI_BASE_URL"):
-        Settings(openai_base_url="   ")
+    assert Settings(openai_base_url="").openai_base_url == ""
+    assert Settings(openai_base_url="   ").openai_base_url == ""
+
     with pytest.raises(ValidationError, match="http"):
         Settings(openai_base_url="api.openai.com/v1")
 
-    # A trailing slash is not an error, just noise; it is normalised away so the value
-    # compares equal to the same endpoint on the allowlist.
+    # The trailing slash is noise, normalised away so the value compares equal to the
+    # same endpoint on the allowlist.
     assert Settings(openai_base_url="https://api.openai.com/v1/").openai_base_url == (
         "https://api.openai.com/v1"
     )
+
+
+def test_a_server_with_nothing_of_its_own_asks_for_each_missing_piece(monkeypatch) -> None:
+    """The shipping configuration: no key, no endpoint, no model on the server.
+
+    Each refusal names the field that is missing. "Planning failed" would send someone
+    back to the key they just typed, which is the one part that was right.
+    """
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "openai_base_url", "")
+    monkeypatch.setattr(settings, "openai_model", "")
+
+    with pytest.raises(LlmCredentialsError, match="no LLM endpoint of its own"):
+        parse_override(KEY, None, "gpt-4o")
+
+    with pytest.raises(LlmCredentialsError, match="no default model"):
+        parse_override(KEY, "https://api.openai.com/v1", None)
+
+    # All three supplied: nothing is read from the environment at all.
+    override = parse_override(KEY, "https://api.openai.com/v1", "gpt-4o")
+    assert override == LlmOverride(KEY, "https://api.openai.com/v1", "gpt-4o")
+
+
+def test_with_no_server_endpoint_the_allowlist_is_the_only_gate(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_base_url", "")
+    monkeypatch.setattr(settings, "llm_byok_base_urls", "")
+
+    assert allowed_byok_base_urls() == frozenset(DEFAULT_BYOK_BASE_URLS)
+    with pytest.raises(LlmCredentialsError, match="does not allow"):
+        parse_override(KEY, "http://169.254.169.254/", "gpt-4o")
 
 
 def test_the_allowlist_never_contains_an_empty_entry(monkeypatch) -> None:

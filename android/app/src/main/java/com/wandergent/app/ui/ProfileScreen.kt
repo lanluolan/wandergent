@@ -335,9 +335,8 @@ private fun LlmCredentialsDialog(
             ) {
                 Text(
                     "Planning runs on your own AI account, billed by your provider, on "
-                        + "whatever model you name. A backend may have an account of its "
-                        + "own to fall back on; one run for other people will not, and "
-                        + "then this is required rather than optional.",
+                        + "whatever model you name. All three are normally needed: a "
+                        + "backend is not expected to have an AI account of its own.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -363,7 +362,8 @@ private fun LlmCredentialsDialog(
                     onValueChange = { model = it },
                     singleLine = true,
                     enabled = apiKey.isNotBlank(),
-                    label = { Text("Model (optional)") },
+                    label = { Text("Model") },
+                    placeholder = { Text("gpt-4o") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -371,16 +371,18 @@ private fun LlmCredentialsDialog(
                     onValueChange = { baseUrl = it },
                     singleLine = true,
                     enabled = apiKey.isNotBlank(),
-                    label = { Text("Endpoint (optional)") },
+                    label = { Text("Endpoint") },
                     placeholder = { Text("https://api.example.com/v1") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    // Both halves are surprises worth naming before someone hits Save.
-                    "Leave the endpoint blank for the backend's own provider. The "
-                        + "well-known ones work without setup; anything else has to be "
-                        + "allowed by whoever runs the backend. A model or endpoint "
-                        + "without a key is refused, not ignored.",
+                    // What a blank field actually does, which is the surprise: it does
+                    // not mean "default", it means "whatever the backend has", and a
+                    // backend run for other people has nothing.
+                    "A blank field falls back to the backend, which usually has nothing "
+                        + "to fall back on -- it will say which one it needs. The "
+                        + "well-known providers are accepted as endpoints without setup; "
+                        + "anything else has to be allowed by whoever runs the backend.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
