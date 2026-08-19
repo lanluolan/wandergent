@@ -1468,3 +1468,27 @@ lever, and it addresses the four large hops; it does nothing about seventeen sch
 left no gap at all. A zero gap needs no measurement to detect, and the validator already
 computes the exact shortfall -- which makes a deterministic repair in code the obvious first
 move, in keeping with this project's own rule that the constraint layer is code, not a prompt.
+
+## The window theme is the app's, not the platform's (2026-08-19)
+
+The manifest pointed at `@android:style/Theme.Material.Light.NoActionBar`, whose window
+background is white. The system paints that from the moment the activity launches until
+Compose draws its first frame, so every cold start flashed white and then repainted to the
+teal surface -- ugly normally, and the *first frame of any screen recording*.
+
+`Theme.Wandergent` now sets `android:windowBackground` to a colour resource that duplicates
+`WandergentTheme`'s surface (`#FAFDFC`, `#0E1415` in `values-night`). Duplicating a colour
+across Kotlin and XML is a second source of truth and it is unavoidable: the framework needs
+the value before any Kotlin has run.
+
+**The `values-night` qualifier follows the *system*, not the app.** The in-app
+Light/Dark/System setting lives in DataStore and cannot be read before the window exists, so
+forcing dark on a light phone still shows one light frame. Not worth a synchronously-readable
+second store for one frame -- and the starting window is built from the manifest theme before
+`onCreate` runs anyway, so `setTheme` could not fix it either.
+
+That same split *was* worth fixing for the status bar, where it is permanent rather than one
+frame: `android:windowLightStatusBar` would have left dark-on-dark icons for the whole session
+whenever the in-app mode disagrees with the system. `MainActivity` now drives
+`isAppearanceLight{Status,Navigation}Bars` from the resolved `dark` flag in a `SideEffect`, so
+the bars follow the setting the user actually chose.

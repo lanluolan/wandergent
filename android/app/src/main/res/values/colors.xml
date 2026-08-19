@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one colour the framework needs before any Kotlin runs.
+
+  It has to match `WandergentTheme`'s surface, because the system paints the window with it
+  from the moment the activity launches until Compose draws its first frame. The platform
+  default is white, which is why a cold start used to flash.
+-->
+<resources>
+    <color name="window_background">#FAFDFC</color>
+</resources>

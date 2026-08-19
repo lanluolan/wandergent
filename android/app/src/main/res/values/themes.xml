@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window the app is drawn into, as opposed to the Compose theme drawn inside it.
+
+  Everything visual is Compose's job except this: the frame the system puts on screen before
+  the first frame exists. It used to be the platform's own `Theme.Material.Light.NoActionBar`,
+  whose window background is white, so every cold start flashed white and then repainted.
+-->
+<resources>
+    <style name="Theme.Wandergent" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <!-- Light surface, so the status bar icons have to be dark to be legible. -->
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

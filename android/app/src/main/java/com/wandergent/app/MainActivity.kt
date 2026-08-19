@@ -5,8 +5,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wandergent.app.data.ServerConfig
 import com.wandergent.app.data.ThemeMode
@@ -31,6 +34,18 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
+            }
+
+            // The manifest theme picks the status bar icon colour from the *system* dark
+            // mode, which is the wrong source once the app has its own Light/Dark/System
+            // setting: force dark on a light phone and the bar keeps dark-on-dark icons.
+            // The window is the only place this can be corrected, so it is corrected here.
+            val view = LocalView.current
+            SideEffect {
+                WindowCompat.getInsetsController(window, view).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
             }
 
             WandergentTheme(darkTheme = dark) {
