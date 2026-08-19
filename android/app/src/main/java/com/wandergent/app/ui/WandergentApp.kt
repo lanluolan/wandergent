@@ -16,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -32,6 +33,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
 import com.wandergent.app.data.Currency
 import com.wandergent.app.data.LlmCredentials
+import com.wandergent.app.data.LlmSupport
+import com.wandergent.app.data.Network
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.local.SettingsStore
@@ -84,6 +87,13 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
     // change it without threading state through every screen in between.
     val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.DEFAULT)
     val llmCredentials by settings.llmCredentials.collectAsStateWithLifecycle(LlmCredentials.NONE)
+    // Asked once per shell, not per dialog: it is a property of the deployment, and the
+    // answer decides whether the "AI model" form marks model and endpoint as required.
+    // A failure leaves [LlmSupport.UNKNOWN], which is the permissive answer -- a probe
+    // that did not arrive is not evidence that the server lacks an account.
+    val llmSupport by produceState(LlmSupport.UNKNOWN) {
+        value = runCatching { Network.planApi.health().llm }.getOrDefault(LlmSupport.UNKNOWN)
+    }
 
     /** A plan handed from the library to the planner, to be edited. Cleared on arrival. */
     var reviseSaved by remember { mutableStateOf<SavedPlanEntity?>(null) }
@@ -199,6 +209,7 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
                     themeMode = themeMode,
                     onThemeChange = { scope.launch { settings.setThemeMode(it) } },
                     llmCredentials = llmCredentials,
+                    llmSupport = llmSupport,
                     onLlmCredentialsChange = { scope.launch { settings.setLlmCredentials(it) } },
                     onLogout = onLogout,
                 )

@@ -1,6 +1,7 @@
 package com.wandergent.app.data
 
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
 
 interface PlanApi {
@@ -12,4 +13,8 @@ interface PlanApi {
      */
     @POST("plan")
     suspend fun plan(@Body request: PlanRequest): PlanResponse
+
+    /** What the backend can supply for callers who bring only part of an LLM account. */
+    @GET("health")
+    suspend fun health(): HealthDto
 }

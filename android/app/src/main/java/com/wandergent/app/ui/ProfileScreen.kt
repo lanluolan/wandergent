@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.wandergent.app.BuildConfig
 import com.wandergent.app.data.Currency
 import com.wandergent.app.data.LlmCredentials
+import com.wandergent.app.data.LlmSupport
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.UserEntity
 import java.text.SimpleDateFormat
@@ -59,6 +60,7 @@ fun ProfileScreen(
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
     llmCredentials: LlmCredentials,
+    llmSupport: LlmSupport,
     onLlmCredentialsChange: (LlmCredentials) -> Unit,
     onLogout: () -> Unit,
 ) {
@@ -262,6 +264,7 @@ fun ProfileScreen(
     if (editingLlm) {
         LlmCredentialsDialog(
             current = llmCredentials,
+            support = llmSupport,
             onDismiss = { editingLlm = false },
             onSave = {
                 onLlmCredentialsChange(it)
@@ -315,6 +318,7 @@ fun ProfileScreen(
 @Composable
 private fun LlmCredentialsDialog(
     current: LlmCredentials,
+    support: LlmSupport,
     onDismiss: () -> Unit,
     onSave: (LlmCredentials) -> Unit,
 ) {
@@ -324,6 +328,12 @@ private fun LlmCredentialsDialog(
     // Starts hidden even when the field is empty, so the default is never "shoulder
     // surfing works". Toggling is there because typing a long key blind is miserable.
     var revealed by remember { mutableStateOf(false) }
+    // What the backend cannot lend, the traveller has to supply. Only asked once a key
+    // is being entered: with no key the whole thing is off and nothing is required.
+    val needsModel = !support.model
+    val needsEndpoint = !support.endpoint
+    val complete = apiKey.isBlank() ||
+        ((!needsModel || model.isNotBlank()) && (!needsEndpoint || baseUrl.isNotBlank()))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -335,8 +345,16 @@ private fun LlmCredentialsDialog(
             ) {
                 Text(
                     "Planning runs on your own AI account, billed by your provider, on "
-                        + "whatever model you name. All three are normally needed: a "
-                        + "backend is not expected to have an AI account of its own.",
+                        + "whatever model you name. "
+                        + (
+                            if (needsModel || needsEndpoint) {
+                                "This backend has no AI account of its own, so it " +
+                                    "needs all of these from you."
+                            } else {
+                                "This backend can fill in the model and endpoint, so " +
+                                    "a key on its own is enough."
+                            }
+                        ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -362,7 +380,8 @@ private fun LlmCredentialsDialog(
                     onValueChange = { model = it },
                     singleLine = true,
                     enabled = apiKey.isNotBlank(),
-                    label = { Text("Model") },
+                    isError = apiKey.isNotBlank() && needsModel && model.isBlank(),
+                    label = { Text(if (needsModel) "Model" else "Model (optional)") },
                     placeholder = { Text("gpt-4o") },
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -371,17 +390,13 @@ private fun LlmCredentialsDialog(
                     onValueChange = { baseUrl = it },
                     singleLine = true,
                     enabled = apiKey.isNotBlank(),
-                    label = { Text("Endpoint") },
+                    isError = apiKey.isNotBlank() && needsEndpoint && baseUrl.isBlank(),
+                    label = { Text(if (needsEndpoint) "Endpoint" else "Endpoint (optional)") },
                     placeholder = { Text("https://api.example.com/v1") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    // What a blank field actually does, which is the surprise: it does
-                    // not mean "default", it means "whatever the backend has", and a
-                    // backend run for other people has nothing.
-                    "A blank field falls back to the backend, which usually has nothing "
-                        + "to fall back on -- it will say which one it needs. The "
-                        + "well-known providers are accepted as endpoints without setup; "
+                    "The well-known providers are accepted as endpoints without setup; "
                         + "anything else has to be allowed by whoever runs the backend.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -390,6 +405,10 @@ private fun LlmCredentialsDialog(
         },
         confirmButton = {
             TextButton(
+                // Refusing to save an incomplete account here rather than letting the
+                // server refuse the first plan: the server does say which field is
+                // missing, but only after someone has asked for a trip and waited.
+                enabled = complete,
                 onClick = {
                     onSave(
                         if (apiKey.isBlank()) {

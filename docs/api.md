@@ -85,11 +85,21 @@ provider, so sending it to a caller's endpoint would fail the first turn of ever
 
 ## `GET /health`
 
-Liveness check. No auth, no body.
+Liveness check, plus what the server can lend a caller who does not send every LLM header.
+No auth, no body.
 
 ```json
-{ "status": "ok", "app": "Wandergent" }
+{ "status": "ok", "app": "Wandergent", "llm": { "key": false, "endpoint": false, "model": false } }
 ```
+
+`llm` reports only *whether* each setting is non-empty, never its value — the client needs
+to know which fields it must ask the traveller for, not what they would be.
+
+The app reads this before showing its "AI model" form, because whether the model and
+endpoint are required is a fact about the server and guessing it is wrong either way: a
+deployment carrying no account needs both filled in, one pointed at a provider it simply
+has no key for does not. A client that cannot reach this treats all three as available,
+which is the permissive answer — a probe that did not arrive is not evidence.
 
 ---
 

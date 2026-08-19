@@ -1698,3 +1698,28 @@ it was about a typo failing per request instead of at boot.
 borrow, so they now name all three missing settings up front instead of only the key. A
 developer box keeps its `.env`; nothing else should.
 
+## The form asks the server what it must ask the traveller (2026-08-19)
+
+Follow-up to the entry above, from noticing that making the model and endpoint required
+had only changed their *labels*. `Save` still accepted a key with both blank, and the
+refusal arrived from the server on the first plan -- one wasted round trip, and an error
+where a trip was expected.
+
+The obvious fix, requiring all three in the app, is wrong. Whether they are required is a
+fact about the *server*: a deployment carrying no AI account needs both filled in, but one
+pointed at a provider it simply has no key for does not, and forcing them there is
+pointless typing that also makes the server's own settings unreachable.
+
+So `GET /health` now reports an `llm` block -- three booleans, never the values. The app
+reads it once per shell and labels its own form from it: required with red fields and a
+disabled `Save`, or `(optional)` and a `Save` that accepts a key alone. The body text
+switches with it.
+
+**A failed probe means permissive**, not required. That was the tempting default and it is
+backwards: an answer that did not arrive is not evidence the server lacks an account, and
+inventing a requirement from it would block someone whose backend is fine. The server still
+refuses a genuinely incomplete request, by name.
+
+Verified both directions on device against the same build, because checking only the
+required side would not distinguish this from hard-coding "always required".
+

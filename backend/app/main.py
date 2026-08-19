@@ -229,9 +229,28 @@ GLOBAL_PLAN_KEY = "plan:all"
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
+class LlmSupport(BaseModel):
+    """What this server can lend a caller who does not send all three headers.
+
+    Booleans rather than the values themselves. The client needs to know which fields it
+    must ask for, not what they would be, and a server's endpoint and model are
+    operational detail nobody has to publish to answer that.
+
+    Without this the app cannot label its own form: whether the model and endpoint are
+    required is a fact about the server, and guessing it either way is wrong. A
+    deployment that carries no account needs them filled in; one pointed at a provider
+    with no key of its own does not, and forcing them there is pointless typing.
+    """
+
+    key: bool
+    endpoint: bool
+    model: bool
+
+
 class HealthResponse(BaseModel):
     status: str
     app: str
+    llm: LlmSupport
 
 
 class PlanRequest(BaseModel):
@@ -260,8 +279,21 @@ class PlanRequest(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check: confirm the service is up and config is readable."""
-    return HealthResponse(status="ok", app=settings.app_name)
+    """Health check: confirm the service is up and config is readable.
+
+    Also reports what the LLM config can supply, which the app reads before showing its
+    "AI model" form. Unauthenticated on purpose: it says only whether three settings are
+    non-empty, which is less than the planning endpoints already tell anyone who tries.
+    """
+    return HealthResponse(
+        status="ok",
+        app=settings.app_name,
+        llm=LlmSupport(
+            key=bool(settings.openai_api_key),
+            endpoint=bool(settings.openai_base_url),
+            model=bool(settings.openai_model),
+        ),
+    )
 
 
 @app.post("/plan", response_model=PlanResult)
