@@ -31,6 +31,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
 import com.wandergent.app.data.Currency
+import com.wandergent.app.data.LlmCredentials
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.local.SettingsStore
@@ -82,6 +83,7 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
     // here rather than passed down from the activity, so the profile tab can show and
     // change it without threading state through every screen in between.
     val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.DEFAULT)
+    val llmCredentials by settings.llmCredentials.collectAsStateWithLifecycle(LlmCredentials.NONE)
 
     /** A plan handed from the library to the planner, to be edited. Cleared on arrival. */
     var reviseSaved by remember { mutableStateOf<SavedPlanEntity?>(null) }
@@ -196,6 +198,8 @@ fun WandergentApp(user: UserEntity?, onLogout: () -> Unit) {
                     },
                     themeMode = themeMode,
                     onThemeChange = { scope.launch { settings.setThemeMode(it) } },
+                    llmCredentials = llmCredentials,
+                    onLlmCredentialsChange = { scope.launch { settings.setLlmCredentials(it) } },
                     onLogout = onLogout,
                 )
             }

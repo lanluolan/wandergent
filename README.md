@@ -76,10 +76,15 @@ cp .env.example .env        # then put your key in OPENAI_API_KEY
 uv run uvicorn app.main:app --reload
 ```
 
-`GET /health` answers without a key. Planning needs one.
+`GET /health` answers without a key. Planning needs one — either the server's, or the
+traveller's own: the app's **You -> AI model** row takes an API key, and optionally a model
+name and endpoint, and sends them per request. That is the way to try this without being
+handed someone else's key. The endpoint field only accepts what the operator allowlisted in
+`LLM_BYOK_BASE_URLS`; the server's own is always allowed, so a different account on the same
+provider works out of the box. See `docs/api.md`.
 
 ```bash
-uv run pytest -q                        # 440 offline tests, no key needed
+uv run pytest -q                        # 455 offline tests, no key needed
 uv run python -m scripts.smoke_plan     # live end-to-end run (costs tokens)
 uv run python -m evals.run              # LLM regression eval (costs tokens)
 ```

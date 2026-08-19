@@ -53,6 +53,98 @@ class PlanningConfigError(PlanningError):
     """The service itself is misconfigured, e.g. a missing API key."""
 
 
+class LlmCredentialsError(ValueError):
+    """The caller supplied their own LLM credentials and they are not usable.
+
+    Deliberately not a `PlanningError`: those mean the service or the upstream model
+    failed and map to 5xx. This one means the *request* was wrong, which is a 400. A
+    caller who cannot tell the two apart retries forever against a server that will
+    never accept what they are sending.
+    """
+
+
+@dataclass(frozen=True, repr=False)
+class LlmOverride:
+    """LLM credentials supplied per request instead of read from the environment.
+
+    Exists so someone who is not the operator can run the app against their own account:
+    the operator's key stays in `.env` and is never handed out, and the caller pays for
+    their own tokens.
+
+    `repr` is written by hand and `__str__` follows it. A dataclass' generated repr would
+    print the key, and this object ends up inside exception messages, structured logs and
+    debugger frames -- all of which get pasted into issues.
+    """
+
+    api_key: str
+    base_url: str
+    model: str
+
+    def __repr__(self) -> str:
+        return (
+            f"LlmOverride(api_key=***{self.api_key[-4:]}, "
+            f"base_url={self.base_url!r}, model={self.model!r})"
+        )
+
+
+def allowed_byok_base_urls() -> frozenset[str]:
+    """Endpoints a caller may point their own key at.
+
+    Always includes the server's own, so the common case -- same provider, different
+    account -- needs no configuration. Anything else has to be listed by the operator in
+    `LLM_BYOK_BASE_URLS`.
+
+    This is an allowlist rather than a validity check on purpose. The base URL is a
+    caller-supplied address that *this server* then makes requests to, which is
+    server-side request forgery by construction: an unchecked one can be pointed at a
+    cloud metadata endpoint or an internal host, and the reply comes back in an error
+    message. A hostname check cannot fix that -- DNS can resolve anywhere, and can change
+    between the check and the call -- so the set of reachable hosts has to be closed.
+    """
+    configured = (url.strip().rstrip("/") for url in settings.llm_byok_base_urls.split(","))
+    return frozenset({settings.openai_base_url.rstrip("/"), *(u for u in configured if u)})
+
+
+def parse_override(
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None,
+) -> LlmOverride | None:
+    """Read per-request LLM credentials, or None to use the server's own.
+
+    The model may only be chosen alongside a key. Letting a caller pick the model while
+    the *server* pays turns a daily plan budget into an open-ended one -- the ceiling
+    counts runs, and the cost of a run is exactly what the model choice decides.
+
+    Raises [LlmCredentialsError] rather than ignoring what it cannot honour: a silently
+    dropped header looks like a working setting that never takes effect, which is the
+    single most expensive kind of bug to find from the client side.
+    """
+    key = (api_key or "").strip()
+    url = (base_url or "").strip().rstrip("/")
+    name = (model or "").strip()
+
+    if not key:
+        if url or name:
+            raise LlmCredentialsError(
+                "a model or endpoint was supplied without an API key; "
+                "send your own key alongside them, or send none of the three"
+            )
+        return None
+
+    if url and url not in allowed_byok_base_urls():
+        raise LlmCredentialsError(
+            f"this server does not allow {url!r} as an LLM endpoint; "
+            "leave the endpoint unset to use the one it is configured with"
+        )
+
+    return LlmOverride(
+        api_key=key,
+        base_url=url or settings.openai_base_url,
+        model=name or settings.openai_model,
+    )
+
+
 @dataclass
 class StreamedToolCall:
     """A tool call reassembled from deltas.
@@ -87,8 +179,18 @@ class Turn:
         return self.finish_reason == "length"
 
 
-def build_client() -> AsyncOpenAI:
-    """Create the LLM client. Timeout is mandatory, per the project's hard rules."""
+def build_client(override: LlmOverride | None = None) -> AsyncOpenAI:
+    """Create the LLM client. Timeout is mandatory, per the project's hard rules.
+
+    With an `override` the caller's key and endpoint are used and the server's are not
+    read at all, so a server with no key of its own still serves callers who bring one.
+    """
+    if override is not None:
+        return AsyncOpenAI(
+            api_key=override.api_key,
+            base_url=override.base_url,
+            timeout=settings.llm_timeout_seconds,
+        )
     if not settings.openai_api_key:
         raise PlanningConfigError("OPENAI_API_KEY is not set; put your key in backend/.env")
     return AsyncOpenAI(

@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.xiaomimimo.com/v1"
     openai_model: str = "mimo-v2.5-pro"
 
+    # Extra endpoints a caller may point their *own* key at, comma-separated. The
+    # server's own `openai_base_url` is always allowed, so the common case -- someone
+    # else's account on the same provider -- needs nothing here.
+    #
+    # Empty by default because this is an SSRF allowlist, not a convenience list: the
+    # value is an address this server is asked to make requests to on a stranger's
+    # behalf. Widen it deliberately, one endpoint at a time.
+    llm_byok_base_urls: str = ""
+
     # Model routing. The first turn of a run only has to read the request and choose
     # tool arguments -- it never writes the itinerary, because that turn is forced to
     # emit a tool call. So it can run on a cheaper model.

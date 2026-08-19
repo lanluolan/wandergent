@@ -36,6 +36,40 @@ fail with `CLEARTEXT communication not permitted` before any request is sent.
 
 ---
 
+## Bringing your own LLM key
+
+Both planning endpoints accept the caller's own LLM account as headers. Without them the
+backend uses the key in its own `.env`, which is the normal case.
+
+| Header | Required | Meaning |
+|---|---|---|
+| `X-LLM-Api-Key` | yes, to use any of these | The caller's key. Sent per request; never stored server-side. |
+| `X-LLM-Model` | no | Model name. Defaults to the server's `OPENAI_MODEL`. |
+| `X-LLM-Base-Url` | no | OpenAI-compatible endpoint. Defaults to the server's `OPENAI_BASE_URL`. |
+
+Headers, not body fields: a key in the body ends up in request logs and in FastAPI's
+validation-error echo, and `PlanRequest` is the schema this document publishes.
+
+**A model or endpoint without a key is `400`, not a fallback.** Silently using the
+server's key for a request that asked not to would spend the operator's money, and from
+the client it would look like a setting that never takes effect.
+
+**`X-LLM-Base-Url` must be one the operator allowed.** Always permitted: the server's own
+`OPENAI_BASE_URL` — so someone else's account on the same provider needs no configuration.
+Anything else has to be listed in `LLM_BYOK_BASE_URLS`. This is an allowlist because the
+address is one *the server* then calls: unchecked, it is server-side request forgery, and a
+hostname check cannot close it because DNS can resolve anywhere and can change between the
+check and the call. An unlisted endpoint is `400`.
+
+**It does not raise your rate limit.** Your key pays for tokens; the run still spends the
+server's Google Places and Routes quota, which is the expensive half. And "I brought a key"
+is a header anyone can send.
+
+**Fast-model routing is off for these runs.** `FAST_MODEL` names a model on *this server's*
+provider, so sending it to a caller's endpoint would fail the first turn of every run.
+
+---
+
 ## `GET /health`
 
 Liveness check. No auth, no body.

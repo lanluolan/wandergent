@@ -52,6 +52,15 @@ object Network {
     var authToken: String? = null
 
     /**
+     * The traveller's own LLM account, or [LlmCredentials.NONE] to use the backend's.
+     *
+     * Volatile global for the same reason [authToken] is: the interceptor chain is built
+     * once and every request has to see the current value.
+     */
+    @Volatile
+    var llmCredentials: LlmCredentials = LlmCredentials.NONE
+
+    /**
      * Called when the server rejects a token we attached.
      *
      * A lambda rather than a dependency on the session store, so the network layer stays
@@ -88,6 +97,24 @@ object Network {
         response
     }
 
+    /**
+     * Attaches the traveller's own LLM key, when [LlmCredentials.headersFor] says it may
+     * be attached at all. The rules live there; this only applies them.
+     */
+    private val attachLlmKey = Interceptor { chain ->
+        val request = chain.request()
+        val headers = llmCredentials.headersFor(request.url)
+        if (headers.isEmpty()) {
+            chain.proceed(request)
+        } else {
+            chain.proceed(
+                request.newBuilder()
+                    .apply { headers.forEach { (name, value) -> header(name, value) } }
+                    .build()
+            )
+        }
+    }
+
     /** Shared with [DayMapClient], so timeouts and logging are configured in one place. */
     val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -96,9 +123,13 @@ object Network {
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .addInterceptor(authenticate)
+        .addInterceptor(attachLlmKey)
         .apply {
             if (BuildConfig.DEBUG) {
                 addInterceptor(
+                    // BASIC on purpose, not just for brevity: HEADERS and BODY would
+                    // print `X-LLM-Api-Key`, and a debug log is the easiest place in
+                    // the system to leak a traveller's key from.
                     HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
                 )
             }

@@ -21,7 +21,7 @@ import okhttp3.sse.EventSources
  */
 class PlanStreamClient(private val baseUrl: () -> String = { ServerConfig.baseUrl }) {
 
-    /** Read per request, not cached: the address is a setting the user can change. */
+    /** Injectable so tests can point it somewhere; in the app it is the built-in address. */
     private fun url() = baseUrl().trimEnd('/') + "/plan/stream"
 
     // Derived from the shared client rather than built fresh, so it inherits the

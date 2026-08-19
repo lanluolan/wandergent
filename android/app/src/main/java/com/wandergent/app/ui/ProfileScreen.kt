@@ -33,9 +33,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.wandergent.app.BuildConfig
 import com.wandergent.app.data.Currency
+import com.wandergent.app.data.LlmCredentials
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.UserEntity
 import java.text.SimpleDateFormat
@@ -55,11 +58,14 @@ fun ProfileScreen(
     onCurrencyChange: (Currency) -> Unit,
     themeMode: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    llmCredentials: LlmCredentials,
+    onLlmCredentialsChange: (LlmCredentials) -> Unit,
     onLogout: () -> Unit,
 ) {
     var confirmLogout by remember { mutableStateOf(false) }
     var pickingCurrency by remember { mutableStateOf(false) }
     var pickingTheme by remember { mutableStateOf(false) }
+    var editingLlm by remember { mutableStateOf(false) }
     var managingEmail by remember { mutableStateOf(false) }
 
     Column(
@@ -121,6 +127,20 @@ fun ProfileScreen(
                     value = themeMode.label,
                     enabled = true,
                     onClick = { pickingTheme = true },
+                )
+                HorizontalDivider()
+                // Says whose account pays, because that is the only thing anyone
+                // actually wants to know from this row.
+                SettingRow(
+                    label = "AI model",
+                    value = when {
+                        !llmCredentials.isSet -> "This server's account"
+                        llmCredentials.model.isNotBlank() ->
+                            "${llmCredentials.model} -- your key ****${llmCredentials.hint}"
+                        else -> "Your key ****${llmCredentials.hint}"
+                    },
+                    enabled = true,
+                    onClick = { editingLlm = true },
                 )
                 HorizontalDivider()
                 // Says what is *lost*, not just what is missing. "Unverified" alone
@@ -236,6 +256,17 @@ fun ProfileScreen(
         )
     }
 
+    if (editingLlm) {
+        LlmCredentialsDialog(
+            current = llmCredentials,
+            onDismiss = { editingLlm = false },
+            onSave = {
+                onLlmCredentialsChange(it)
+                editingLlm = false
+            },
+        )
+    }
+
     if (managingEmail) {
         EmailDialog(
             current = user?.email.orEmpty(),
@@ -264,6 +295,109 @@ fun ProfileScreen(
             },
         )
     }
+}
+
+/**
+ * Where someone puts their own LLM account in, so the tokens are billed to them.
+ *
+ * Three fields, only the first required. A key alone is the case this exists for --
+ * someone else's account on the same provider the backend already talks to -- so model
+ * and endpoint stay blank and the backend fills in its own.
+ *
+ * The endpoint is offered but the backend decides whether to honour it: it is the
+ * backend that would make the request, so an arbitrary address there is server-side
+ * request forgery. An unlisted one comes back as a 400 rather than being silently
+ * ignored, which is why this dialog does not pretend to validate it.
+ */
+@Composable
+private fun LlmCredentialsDialog(
+    current: LlmCredentials,
+    onDismiss: () -> Unit,
+    onSave: (LlmCredentials) -> Unit,
+) {
+    var apiKey by remember { mutableStateOf(current.apiKey) }
+    var model by remember { mutableStateOf(current.model) }
+    var baseUrl by remember { mutableStateOf(current.baseUrl) }
+    // Starts hidden even when the field is empty, so the default is never "shoulder
+    // surfing works". Toggling is there because typing a long key blind is miserable.
+    var revealed by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("AI model") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "Leave this empty and planning uses the account the backend is "
+                        + "configured with. Fill it in and your provider bills you instead.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    singleLine = true,
+                    label = { Text("API key") },
+                    visualTransformation = if (revealed) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        TextButton(onClick = { revealed = !revealed }) {
+                            Text(if (revealed) "Hide" else "Show")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it },
+                    singleLine = true,
+                    enabled = apiKey.isNotBlank(),
+                    label = { Text("Model (optional)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    singleLine = true,
+                    enabled = apiKey.isNotBlank(),
+                    label = { Text("Endpoint (optional)") },
+                    placeholder = { Text("https://api.example.com/v1") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    // Both halves are surprises worth naming before someone hits Save.
+                    "A model or endpoint without a key is refused, not ignored. The "
+                        + "backend only accepts endpoints its operator has allowed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        if (apiKey.isBlank()) {
+                            LlmCredentials.NONE
+                        } else {
+                            LlmCredentials(apiKey.trim(), baseUrl.trim(), model.trim())
+                        }
+                    )
+                }
+            ) {
+                Text(if (apiKey.isBlank()) "Use the server's" else "Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 /** An [InfoRow] you can tap, for the rows that are settings rather than facts. */

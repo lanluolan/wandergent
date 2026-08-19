@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from app import mail
 from app import ratelimit as ratelimits
 from app.agent.events import PlanEvent
+from app.agent.llm import LlmCredentialsError, LlmOverride, build_client, parse_override
 from app.agent.orchestrator import (
     PlanningConfigError,
     PlanningError,
@@ -93,6 +94,29 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+def llm_override(
+    api_key: Annotated[str | None, Header(alias="X-LLM-Api-Key")] = None,
+    base_url: Annotated[str | None, Header(alias="X-LLM-Base-Url")] = None,
+    model: Annotated[str | None, Header(alias="X-LLM-Model")] = None,
+) -> LlmOverride | None:
+    """The caller's own LLM credentials, if they sent any.
+
+    Headers rather than body fields, for two reasons. A key in the body ends up in
+    request-logging middleware, in FastAPI's validation-error echo and in any client that
+    pretty-prints what it sent; headers are the thing every logger is already written to
+    redact. And `PlanRequest` is the schema `docs/api.md` is generated from and the
+    Android DTO mirrors -- a secret does not belong in a document meant to be published.
+
+    Rejects with 400 rather than falling back to the server's key: silently ignoring
+    credentials someone deliberately sent would spend the operator's money on a request
+    that asked not to.
+    """
+    try:
+        return parse_override(api_key, base_url, model)
+    except LlmCredentialsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def caller(request: Request) -> str:
     """A key for the client, for rate limiting only.
 
@@ -131,6 +155,11 @@ def enforce_plan_budget(key: str) -> None:
     you did it, and waiting fixes it. Hitting the service ceiling is a 503: you did
     nothing wrong, the service is out of budget, and telling you "too many requests"
     would send you tapping retry over something you cannot influence.
+
+    **Applies to callers who bring their own LLM key too.** Their key pays for the
+    tokens, but not for the run: a single plan also spends this server's Google Places
+    and Routes quota, which is the expensive half and stays on the operator's bill. An
+    exemption here would also be trivially claimed -- "I brought a key" is a header.
     """
     daily = ratelimits.plan_daily_global()
     personal = limiter.blocked(key, ratelimits.PLAN)
@@ -209,6 +238,7 @@ async def plan(
     payload: PlanRequest,
     request: Request,
     account: Annotated[Account | None, Depends(viewer)],
+    override: Annotated[LlmOverride | None, Depends(llm_override)] = None,
 ) -> PlanResult:
     """Plan a trip from a natural-language request.
 
@@ -227,6 +257,12 @@ async def plan(
             user_id=account.id if account else "",
             currency=payload.currency.upper(),
             previous=payload.previous,
+            client=build_client(override) if override else None,
+            model=override.model if override else None,
+            # Routing sends the first turn to `FAST_MODEL`, a name from *this* server's
+            # provider. A caller's own endpoint has never heard of it, so every routed
+            # run would fail on the first turn. Their key, their one model.
+            fast_model="" if override else None,
         )
     except PlanningConfigError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -315,6 +351,7 @@ async def plan_stream(
     payload: PlanRequest,
     request: Request,
     account: Annotated[Account | None, Depends(viewer)],
+    override: Annotated[LlmOverride | None, Depends(llm_override)] = None,
 ) -> StreamingResponse:
     """Plan a trip, streaming progress as Server-Sent Events.
 
@@ -334,6 +371,11 @@ async def plan_stream(
                 user_id=account.id if account else "",
                 currency=payload.currency.upper(),
                 previous=payload.previous,
+                client=build_client(override) if override else None,
+                model=override.model if override else None,
+                # See the note in `plan`: the server's FAST_MODEL is not a name the
+                # caller's own endpoint knows.
+                fast_model="" if override else None,
             ):
                 yield _sse(event)
         except PlanningError as exc:

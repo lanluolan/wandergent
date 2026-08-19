@@ -1525,3 +1525,50 @@ Removed alongside it: the "Saved trips" row, an `InfoRow` in a list of tappable 
 Non-tappable text among tappable rows reads as broken, and what it said is already said at the
 moment it matters -- the sign-out dialog.
 
+## A caller can bring their own LLM key (2026-08-19)
+
+The You page gained an "AI model" row: API key, and optionally model and endpoint. Empty
+means the backend uses the key in its own `.env`, which stays the normal case.
+
+This is the one change that lets someone who is not the operator run the app end to end.
+It is also, deliberately, the opposite call from the backend-address row deleted the same
+day -- that one had no user value and no working escape hatch; this one has a user the
+feature is *for*.
+
+Four decisions inside it, each of which had a wrong-but-obvious alternative:
+
+**Headers, not body fields.** A key in `PlanRequest` lands in request logs, in FastAPI's
+validation-error echo, and in `docs/api.md`, which is a published document. Headers are
+what every logger is already written to redact.
+
+**`LLM_BYOK_BASE_URLS` is an SSRF allowlist, not a convenience list.** The endpoint is an
+address *this server* then calls on a stranger's behalf. Unchecked, it points at a cloud
+metadata endpoint or an internal host and the reply comes back in an error message. A
+hostname or IP-range check does not close it -- DNS resolves anywhere and can change
+between the check and the call -- so the set of reachable hosts is closed instead. The
+server's own endpoint is always in it, so the common case (same provider, someone else's
+account) needs no configuration.
+
+**A model or endpoint without a key is a 400.** Falling back to the server's key would
+spend the operator's money on a request that explicitly asked not to. It also removes the
+worst failure mode: a setting that looks applied and silently does nothing.
+
+**Bringing a key does not raise the rate limit.** The key pays for tokens; the run still
+spends this server's Places and Routes quota, which per `docs/open-issues.md` is 9 + 7
+calls of expensive SKU per plan -- the larger bill. And "I brought a key" is a header
+anyone can send.
+
+One bug this would have shipped without: **fast-model routing had to be turned off for
+BYOK runs.** `FAST_MODEL` is a model name on this server's provider; sent to a caller's
+endpoint it fails the first turn of every run, and because routing is silent the failure
+reads as "your key was rejected". `plan_trip` gained a `fast_model` parameter it did not
+have, purely so the HTTP layer could say no.
+
+On the client, all four rules about where the key may go live in
+`LlmCredentials.headersFor` rather than in the OkHttp interceptor: planning paths only,
+never cleartext to a non-loopback host (a debug build can be pointed at a LAN address, and
+that would put the traveller's key on a shared Wi-Fi), blank optional fields omitted rather
+than sent empty. One pure function, testable without a server -- there is no MockWebServer
+in this project. `HttpLoggingInterceptor` stays at `BASIC` for a reason now, not just for
+brevity: `HEADERS` would print the key.
+
