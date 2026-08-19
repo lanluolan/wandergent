@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What may leave the device when Android copies app data.
+
+  `allowBackup="false"` in the manifest already stops cloud backup on every API level.
+  It does not stop device-to-device transfer on Android 12+, which is a separate channel
+  and is opt-out only through this file. So the session token is excluded from both: it
+  is a bearer credential held in plain DataStore, and a copy of it on a second device is
+  a second signed-in session nobody revoked.
+
+  Everything else is left transferable on purpose. The saved-trip library and the
+  transcript are the user's own content, and losing them when they change phones would be
+  a worse trade than the one this file is making. The new device simply asks them to sign
+  in again.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/session.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/session.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>

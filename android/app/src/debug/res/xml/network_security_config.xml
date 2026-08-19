@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only. Replaces the release file of the same name by resource merging.
+
+  Cleartext to anywhere, because the backend address is a user-editable setting and the
+  set of addresses a dev machine can have is open-ended: an adb-reverse loopback, the
+  emulator's 10.0.2.2, whatever the router handed out today. Enumerating hosts is what the
+  release file used to try, and it is what broke the LAN case.
+
+  This cannot reach a shipped build. The debug source set is not compiled into release.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

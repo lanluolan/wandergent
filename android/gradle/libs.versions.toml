@@ -1,0 +1,60 @@
+# Version catalog. Every version here was read from the upstream maven-metadata.xml
+# rather than from memory -- see docs/decisions.md.
+#
+# Note: there is no kotlin-android plugin entry. AGP 9.0+ ships Kotlin support built
+# in and fails the build if the standalone plugin is also applied.
+
+[versions]
+agp = "9.3.1"
+kotlin = "2.4.10"
+composeBom = "2026.06.01"
+activityCompose = "1.13.0"
+coreKtx = "1.19.0"
+lifecycle = "2.11.0"
+retrofit = "3.0.0"
+okhttp = "5.4.0"
+serializationJson = "1.11.0"
+junit = "4.13.2"
+navigation = "2.9.8"
+# Not managed by the Compose BOM, so it needs an explicit version. 1.7.8 is the last
+# release of this artifact; it carries the ~40 common filled icons this app uses.
+materialIcons = "1.7.8"
+room = "2.8.4"
+datastore = "1.2.1"
+ksp = "2.3.11"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
+compose-material-icons = { group = "androidx.compose.material", name = "material-icons-core", version.ref = "materialIcons" }
+
+retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+retrofit-serialization = { group = "com.squareup.retrofit2", name = "converter-kotlinx-serialization", version.ref = "retrofit" }
+okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
+okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
+
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test-junit = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+# Still required even though AGP 9 has built-in Kotlin: the Compose compiler ships as
+# a separate Kotlin compiler plugin.
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

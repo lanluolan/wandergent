@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The release posture: HTTPS only, no exceptions.
+
+  This file used to name three dev hosts (10.0.2.2, localhost, 127.0.0.1) and permit
+  cleartext to them. That was wrong in both directions. It let a shipped build talk
+  plaintext to a loopback address, and (the bug that mattered) it silently blocked the LAN
+  address the settings dialog tells people to type, because `<domain>` matches one host at
+  a time and cannot express "any machine on my Wi-Fi". Nobody saw it: the test device is
+  API 27, where cleartext is allowed by default and this file is barely consulted. On any
+  API 28+ phone the documented "Same Wi-Fi" setup failed with CLEARTEXT NOT PERMITTED.
+
+  The dev hosts moved to `src/debug/res/xml/network_security_config.xml`, which replaces
+  this file in debug builds. Talking to a dev machine is a debug-build affordance, so the
+  exemption belongs on the debug build and nowhere else.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
