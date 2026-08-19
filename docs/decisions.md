@@ -1381,3 +1381,22 @@ this machine has both minors installed and would have built fine either way.
 **This is the class of bug CI exists to find.** It was invisible locally -- the SDK was
 already installed by Android Studio, so nothing ever resolved the package id from the
 network. The failure needed a machine that starts with nothing.
+
+## 2026-08-18 -- The second Windows-shaped bug in one CI run: the executable bit
+
+`./gradlew: Permission denied`, exit 126. `git config core.filemode` is `false` on the
+machine this was committed from, which is the right default on Windows -- NTFS has no
+executable bit to read -- so `gradlew` went into the index as `100644` and the Linux runner
+could not run it.
+
+Fixed with `git update-index --chmod=+x android/gradlew`, which writes the mode into the
+index directly and needs no filesystem support. `gradlew.bat` stays `100644` on purpose:
+Windows executes it by extension, not by mode.
+
+`.gitattributes` already carried a comment about committing from Windows baking CRLF into
+`gradlew` and failing on a Linux runner "with a confusing error". Half the problem was
+anticipated; the mode bit is the other half, and no `.gitattributes` rule can express it.
+
+Same shape as the SDK package id an hour earlier: **both were invisible on the machine that
+wrote them and needed a runner that starts from nothing.** That is the argument for CI
+stated as evidence rather than as principle.
