@@ -13,8 +13,8 @@ android {
         applicationId = "com.wandergent.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         // Reached over an adb reverse tunnel: `adb reverse tcp:8000 tcp:8000` makes the
         // device's own 127.0.0.1:8000 forward to the host's. That works for a USB

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Split out from colors the UI uses: this one is read by the launcher, not by Compose. -->
+<resources>
+    <color name="ic_launcher_background">#00696E</color>
+</resources>
