@@ -78,9 +78,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.openai_api_key:
         logger.info("LLM configured: %s @ %s", settings.openai_model, settings.openai_base_url)
     else:
-        logger.warning(
-            "OPENAI_API_KEY is not set -- /health works, planning requests will 500. "
-            "Put your key in backend/.env (see .env.example)."
+        # Info, not a warning: running without a key is a deployment mode, not a mistake.
+        # It is how the operator serves other people without paying for their tokens --
+        # every caller brings their own. Planning without one is a 400 telling the
+        # traveller where to add it, not a 500.
+        logger.info(
+            "no OPENAI_API_KEY -- callers must bring their own (X-LLM-Api-Key). "
+            "Set one in backend/.env if this server should have an account of its own."
         )
 
     if settings.smtp_host:
@@ -110,11 +114,28 @@ def llm_override(
     Rejects with 400 rather than falling back to the server's key: silently ignoring
     credentials someone deliberately sent would spend the operator's money on a request
     that asked not to.
+
+    Also rejects with 400 when *neither* side has a key. A deployment run for other
+    people is expected to leave `OPENAI_API_KEY` empty -- the point of bringing a key is
+    that the operator does not pay for strangers' tokens -- and the person who then hits
+    this is a traveller, not whoever wrote `.env`. `PlanningConfigError` would have made
+    it a 500 reading "put your key in backend/.env", which is the right sentence said to
+    the wrong person, and a 5xx tells the client to retry something retrying cannot fix.
     """
     try:
-        return parse_override(api_key, base_url, model)
+        override = parse_override(api_key, base_url, model)
     except LlmCredentialsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if override is None and not settings.openai_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this server has no AI account of its own, so planning needs yours. "
+                "Open You -> AI model and add an API key."
+            ),
+        )
+    return override
 
 
 def caller(request: Request) -> str:

@@ -129,12 +129,15 @@ fun ProfileScreen(
                     onClick = { pickingTheme = true },
                 )
                 HorizontalDivider()
-                // Says whose account pays, because that is the only thing anyone
-                // actually wants to know from this row.
+                // "Not set" rather than "this server's account", which the app is in no
+                // position to claim: a backend run for other people has no account of its
+                // own, and saying it does would be a lie told right up until planning
+                // fails. Whether a fallback exists is the server's to answer, and it
+                // answers it by refusing the run with a sentence pointing back here.
                 SettingRow(
                     label = "AI model",
                     value = when {
-                        !llmCredentials.isSet -> "This server's account"
+                        !llmCredentials.isSet -> "Not set"
                         llmCredentials.model.isNotBlank() ->
                             "${llmCredentials.model} -- your key ****${llmCredentials.hint}"
                         else -> "Your key ****${llmCredentials.hint}"
@@ -331,8 +334,10 @@ private fun LlmCredentialsDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "Leave this empty and planning uses the account the backend is "
-                        + "configured with. Fill it in and your provider bills you instead.",
+                    "Planning runs on your own AI account, billed by your provider, on "
+                        + "whatever model you name. A backend may have an account of its "
+                        + "own to fall back on; one run for other people will not, and "
+                        + "then this is required rather than optional.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -372,8 +377,10 @@ private fun LlmCredentialsDialog(
                 )
                 Text(
                     // Both halves are surprises worth naming before someone hits Save.
-                    "A model or endpoint without a key is refused, not ignored. The "
-                        + "backend only accepts endpoints its operator has allowed.",
+                    "Leave the endpoint blank for the backend's own provider. The "
+                        + "well-known ones work without setup; anything else has to be "
+                        + "allowed by whoever runs the backend. A model or endpoint "
+                        + "without a key is refused, not ignored.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

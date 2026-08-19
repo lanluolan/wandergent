@@ -23,13 +23,14 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.xiaomimimo.com/v1"
     openai_model: str = "mimo-v2.5-pro"
 
-    # Extra endpoints a caller may point their *own* key at, comma-separated. The
-    # server's own `openai_base_url` is always allowed, so the common case -- someone
-    # else's account on the same provider -- needs nothing here.
+    # Endpoints a caller may point their *own* key at, comma-separated. Empty means
+    # `app.agent.llm.DEFAULT_BYOK_BASE_URLS` -- the well-known OpenAI-compatible hosts --
+    # and setting it *replaces* that list, which is how an operator narrows it. The
+    # server's own `openai_base_url` is always allowed either way.
     #
-    # Empty by default because this is an SSRF allowlist, not a convenience list: the
-    # value is an address this server is asked to make requests to on a stranger's
-    # behalf. Widen it deliberately, one endpoint at a time.
+    # It stays a closed list because it is an SSRF allowlist: every host on it is a host
+    # a stranger can make this machine send a request to. Fixed public API hosts are safe
+    # precisely because they are not caller-chosen; "allow anything" would not be.
     llm_byok_base_urls: str = ""
 
     # Model routing. The first turn of a run only has to read the request and choose

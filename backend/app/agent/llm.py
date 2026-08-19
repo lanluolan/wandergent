@@ -87,22 +87,49 @@ class LlmOverride:
         )
 
 
+#: OpenAI-compatible endpoints a caller may bring a key for without the operator
+#: configuring anything.
+#:
+#: A curated default rather than an empty one, because the product answer is "use whatever
+#: model you want" and an empty list makes that false. It stays a *closed* list: these are
+#: fixed, well-known, public API hosts, so nothing here is attacker-chosen, which is the
+#: property that matters. OpenRouter is on it deliberately -- it fronts hundreds of models
+#: behind one host, so "any model" is reachable without opening the door to any address.
+DEFAULT_BYOK_BASE_URLS = (
+    "https://api.openai.com/v1",
+    "https://api.anthropic.com/v1",
+    "https://generativelanguage.googleapis.com/v1beta/openai",
+    "https://api.deepseek.com/v1",
+    "https://api.mistral.ai/v1",
+    "https://api.groq.com/openai/v1",
+    "https://api.together.xyz/v1",
+    "https://openrouter.ai/api/v1",
+)
+
+
 def allowed_byok_base_urls() -> frozenset[str]:
     """Endpoints a caller may point their own key at.
 
-    Always includes the server's own, so the common case -- same provider, different
-    account -- needs no configuration. Anything else has to be listed by the operator in
-    `LLM_BYOK_BASE_URLS`.
+    The server's own is always included, so the simplest case -- same provider, different
+    account -- works with no configuration. Beyond that, `LLM_BYOK_BASE_URLS` *replaces*
+    [DEFAULT_BYOK_BASE_URLS] when it is set, which is how an operator narrows the list;
+    empty means the defaults apply.
 
     This is an allowlist rather than a validity check on purpose. The base URL is a
     caller-supplied address that *this server* then makes requests to, which is
     server-side request forgery by construction: an unchecked one can be pointed at a
     cloud metadata endpoint or an internal host, and the reply comes back in an error
     message. A hostname check cannot fix that -- DNS can resolve anywhere, and can change
-    between the check and the call -- so the set of reachable hosts has to be closed.
+    between the check and the call -- so the set of reachable hosts has to stay closed.
+    Widening it to "anything" would hand strangers this machine as an HTTP client.
     """
-    configured = (url.strip().rstrip("/") for url in settings.llm_byok_base_urls.split(","))
-    return frozenset({settings.openai_base_url.rstrip("/"), *(u for u in configured if u)})
+    configured = [
+        url.strip().rstrip("/")
+        for url in settings.llm_byok_base_urls.split(",")
+        if url.strip()
+    ]
+    allowed = configured or [url.rstrip("/") for url in DEFAULT_BYOK_BASE_URLS]
+    return frozenset({settings.openai_base_url.rstrip("/"), *allowed})
 
 
 def parse_override(

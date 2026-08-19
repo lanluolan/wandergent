@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agent.llm import (
+    DEFAULT_BYOK_BASE_URLS,
     LlmCredentialsError,
     LlmOverride,
     allowed_byok_base_urls,
@@ -61,12 +62,37 @@ def test_an_unlisted_endpoint_is_refused(monkeypatch) -> None:
     monkeypatch.setattr(settings, "llm_byok_base_urls", "")
 
     for hostile in (
-        "http://169.254.169.254/latest/meta-data",
-        "http://127.0.0.1:8000/v1",
-        "https://api.openai.com/v1",
+        "http://169.254.169.254/latest/meta-data",  # cloud metadata
+        "http://127.0.0.1:8000/v1",  # this server, or something behind it
+        "http://192.168.1.10:11434/v1",  # anything on the operator's LAN
+        "https://evil.example.com/v1",
     ):
         with pytest.raises(LlmCredentialsError, match="does not allow"):
             parse_override(KEY, hostile, None)
+
+
+def test_the_well_known_providers_need_no_configuration(monkeypatch) -> None:
+    # "Use whatever model you want" is the product answer, so the default list has to
+    # make it true. It is still closed: these hosts are fixed, not caller-chosen.
+    monkeypatch.setattr(settings, "openai_base_url", "https://api.example.com/v1")
+    monkeypatch.setattr(settings, "llm_byok_base_urls", "")
+
+    for provider in DEFAULT_BYOK_BASE_URLS:
+        assert parse_override(KEY, provider, "some-model") is not None
+
+
+def test_setting_the_allowlist_narrows_it_rather_than_adding(monkeypatch) -> None:
+    # The way an operator locks this down. Their own endpoint stays reachable regardless,
+    # so narrowing cannot lock the server out of itself.
+    monkeypatch.setattr(settings, "openai_base_url", "https://api.example.com/v1")
+    monkeypatch.setattr(settings, "llm_byok_base_urls", "https://api.deepseek.com/v1")
+
+    assert allowed_byok_base_urls() == {
+        "https://api.example.com/v1",
+        "https://api.deepseek.com/v1",
+    }
+    with pytest.raises(LlmCredentialsError, match="does not allow"):
+        parse_override(KEY, "https://api.openai.com/v1", None)
 
 
 def test_the_servers_own_endpoint_is_always_allowed(monkeypatch) -> None:
@@ -81,20 +107,20 @@ def test_the_servers_own_endpoint_is_always_allowed(monkeypatch) -> None:
     assert parse_override(KEY, "https://api.example.com/v1/", None) is not None
 
 
-def test_the_operator_can_widen_the_allowlist(monkeypatch) -> None:
+def test_the_operator_can_name_an_endpoint_the_defaults_miss(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openai_base_url", "https://api.example.com/v1")
     monkeypatch.setattr(
         settings,
         "llm_byok_base_urls",
-        "https://api.openai.com/v1, https://api.other.com/v1/",
+        "https://api.openai.com/v1, https://llm.internal.corp/v1/",
     )
 
     assert allowed_byok_base_urls() == {
         "https://api.example.com/v1",
         "https://api.openai.com/v1",
-        "https://api.other.com/v1",
+        "https://llm.internal.corp/v1",
     }
-    assert parse_override(KEY, "https://api.openai.com/v1", None) is not None
+    assert parse_override(KEY, "https://llm.internal.corp/v1", None) is not None
 
 
 def test_the_key_stays_out_of_reprs_and_logs() -> None:
@@ -233,3 +259,41 @@ def test_an_itinerary_still_comes_back_unchanged(monkeypatch) -> None:
     )
 
     assert Itinerary.model_validate(response.json()["itinerary"]).destination == "Chicago"
+
+
+def test_a_keyless_server_asks_the_traveller_for_a_key(monkeypatch) -> None:
+    # The deployment this feature exists for: the operator pays for no tokens at all.
+    # The person who hits this is a traveller, so the sentence has to point at the screen
+    # they can act on, and 400 rather than 500 because retrying cannot fix it.
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    _patch_plan(monkeypatch)
+
+    response = client.post("/plan", json={"message": "3 days in Los Angeles"})
+
+    assert response.status_code == 400
+    assert "You -> AI model" in response.json()["detail"]
+    assert ".env" not in response.json()["detail"]
+
+
+def test_a_keyless_server_still_serves_a_caller_who_brings_one(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    seen = _patch_plan(monkeypatch)
+
+    response = client.post(
+        "/plan",
+        json={"message": "3 days in Los Angeles"},
+        headers={"X-LLM-Api-Key": KEY},
+    )
+
+    assert response.status_code == 200
+    assert seen["client"].api_key == KEY
+
+
+def test_the_stream_refuses_a_keyless_server_before_it_starts(monkeypatch) -> None:
+    # Before, not during: once a stream has begun the status line is gone, and this
+    # failure needs to arrive as a status code the client can branch on.
+    monkeypatch.setattr(settings, "openai_api_key", "")
+
+    response = client.post("/plan/stream", json={"message": "3 days in Los Angeles"})
+
+    assert response.status_code == 400

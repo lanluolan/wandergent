@@ -1588,3 +1588,61 @@ helped -- the codes genuinely differ; it is the rendering that makes them the sa
 test pins the invariant the card depends on: the three budget codes must render to one
 distinct string.
 
+## Bringing a key becomes the main path, not an override (2026-08-19)
+
+Same day as the entry above, and it changes that feature's posture rather than its
+mechanism. The goal: the operator pays for no model tokens at all, and the traveller
+picks whatever model they want.
+
+Three things had to change for that to be true, and each was false in the first version.
+
+**An empty allowlist made "any model" a lie.** `LLM_BYOK_BASE_URLS` defaulted to empty,
+meaning only the server's own endpoint -- so bringing an OpenAI key to a backend wired to
+another provider simply did not work. The default is now `DEFAULT_BYOK_BASE_URLS`: the
+well-known OpenAI-compatible hosts, OpenRouter among them. OpenRouter is the one that
+makes the claim true, because it fronts hundreds of models behind a single host.
+
+This reverses the default set earlier the same day. **It does not reverse the reasoning.**
+The list stays *closed*: these are fixed, public, well-known API hosts, so none of them is
+attacker-chosen, which is the only property SSRF cares about. Setting the env var now
+*replaces* the defaults rather than adding to them, so narrowing is still one line.
+Widening it to "any address" would hand strangers this machine as an HTTP client, and that
+is still refused.
+
+**A keyless server failed at the wrong person.** `PlanningConfigError` mapped to a 500
+reading *"OPENAI_API_KEY is not set; put your key in backend/.env"* -- the right sentence
+said to a traveller who has no `.env` and cannot act on it, over a status code that tells
+the client to retry something retrying cannot fix. It is now a 400: *"this server has no
+AI account of its own, so planning needs yours. Open You -> AI model and add an API key."*
+The boot log dropped from warning to info for the same reason -- keyless is a deployment
+mode now, not a mistake.
+
+**The app claimed something it cannot know.** The row read "This server's account" when
+nothing was set. Whether a fallback exists is the server's fact, not the client's, and on
+a backend run for other people the claim is false right up until planning fails. It reads
+"Not set"; the server answers the rest by refusing the run with a sentence that points
+back at the row.
+
+**What did not change: the rate limit.** Tokens stop being the operator's problem; a plan
+still spends ~9 Places + 7 Routes calls of expensive SKU on the operator's Maps key, which
+is plausibly the larger bill. `max_plans_per_day` is now the *only* ceiling on cost, so it
+matters more than before, not less.
+
+## A 4xx is not a reason to fall back to the non-streaming endpoint (2026-08-19)
+
+Found while testing the above on device. `/plan/stream` returned 400, and the client
+immediately re-sent the same request to `/plan`, which returned 400 as well.
+
+The fallback exists for transports that cannot carry SSE -- a proxy buffering the response
+into one lump -- and its signal was "no events arrived". A 4xx produces no events but is
+not a transport failure at all: the server answered, in full, with a refusal. The plain
+endpoint runs the same checks and refuses identically, so the retry could only ever cost a
+second request.
+
+On a 429 it costs more than a request. The fallback is counted against the caller's
+allowance too, so hitting the limit once spent two slices of it -- invisible from inside
+the app, where it just looks like a stricter limit than the one documented.
+
+The decision moved into `shouldFallBack(eventsSeen, status)`, next to the progress reducer
+and for the same reason: inside an `AndroidViewModel` it is unreachable from a JVM test.
+

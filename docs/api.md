@@ -39,7 +39,9 @@ fail with `CLEARTEXT communication not permitted` before any request is sent.
 ## Bringing your own LLM key
 
 Both planning endpoints accept the caller's own LLM account as headers. Without them the
-backend uses the key in its own `.env`, which is the normal case.
+backend falls back to the key in its own `.env` -- **if it has one**. A backend run for
+other people is expected not to: leaving `OPENAI_API_KEY` empty is a supported mode, and
+is how the operator avoids paying for strangers' tokens.
 
 | Header | Required | Meaning |
 |---|---|---|
@@ -54,9 +56,17 @@ validation-error echo, and `PlanRequest` is the schema this document publishes.
 server's key for a request that asked not to would spend the operator's money, and from
 the client it would look like a setting that never takes effect.
 
+**No key on either side is `400`**, with a sentence aimed at the traveller rather than at
+whoever wrote `.env`: *"this server has no AI account of its own, so planning needs yours.
+Open You -> AI model and add an API key."* A `5xx` would tell the client to retry something
+retrying cannot fix.
+
 **`X-LLM-Base-Url` must be one the operator allowed.** Always permitted: the server's own
-`OPENAI_BASE_URL` — so someone else's account on the same provider needs no configuration.
-Anything else has to be listed in `LLM_BYOK_BASE_URLS`. This is an allowlist because the
+`OPENAI_BASE_URL`, plus the well-known OpenAI-compatible hosts — OpenAI, Anthropic, Gemini,
+DeepSeek, Mistral, Groq, Together and OpenRouter. OpenRouter is on that list deliberately:
+it fronts hundreds of models behind one host, so "use any model" is true without opening
+the list. Setting `LLM_BYOK_BASE_URLS` **replaces** the defaults, which is how an operator
+narrows it. This is an allowlist because the
 address is one *the server* then calls: unchecked, it is server-side request forgery, and a
 hostname check cannot close it because DNS can resolve anywhere and can change between the
 check and the call. An unlisted endpoint is `400`.

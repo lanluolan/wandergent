@@ -78,10 +78,19 @@ uv run uvicorn app.main:app --reload
 
 `GET /health` answers without a key. Planning needs one — either the server's, or the
 traveller's own: the app's **You -> AI model** row takes an API key, and optionally a model
-name and endpoint, and sends them per request. That is the way to try this without being
-handed someone else's key. The endpoint field only accepts what the operator allowlisted in
-`LLM_BYOK_BASE_URLS`; the server's own is always allowed, so a different account on the same
-provider works out of the box. See `docs/api.md`.
+name and endpoint, and sends them per request.
+
+**Running it for other people: leave `OPENAI_API_KEY` empty.** Then every caller brings
+their own account and the operator pays for no tokens at all; planning without a key is a
+400 pointing the traveller at that screen. Keep a key in `.env` for local work and evals,
+where the orchestrator is called directly. Note that the model bill is not the whole bill —
+a plan also spends this server's Google Places and Routes quota (~9 + 7 calls of expensive
+SKU), which stays yours, so `MAX_PLANS_PER_DAY` is the ceiling that matters.
+
+The endpoint field accepts the well-known OpenAI-compatible providers out of the box —
+OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, Together, OpenRouter — plus whatever the
+server itself uses. It is a closed allowlist on purpose; `LLM_BYOK_BASE_URLS` replaces it.
+See `docs/api.md`.
 
 ```bash
 uv run pytest -q                        # 455 offline tests, no key needed
