@@ -1646,3 +1646,21 @@ the app, where it just looks like a stricter limit than the one documented.
 The decision moved into `shouldFallBack(eventsSeen, status)`, next to the progress reducer
 and for the same reason: inside an `AndroidViewModel` it is unreachable from a JVM test.
 
+## A blank OPENAI_BASE_URL is a boot failure (2026-08-19)
+
+Asked while reviewing the change above: if a caller only types an API key into the app,
+do `.env`'s endpoint and model still matter? Completely. `parse_override` fills both from
+the server's settings, so a key-only caller talks to *this server's* provider under *this
+server's* model name -- an OpenAI key against a backend pointed elsewhere is a 401, not a
+plan. Only `OPENAI_API_KEY` is genuinely optional.
+
+Which made the blank case worth checking, and it was silently broken: `OPENAI_BASE_URL=`
+produced `base_url=''` on every key-only override and put an empty string on the BYOK
+allowlist, where it would let an empty `X-LLM-Base-Url` header through. It failed per
+request with an error naming neither the setting nor the cause.
+
+A field validator now rejects it at boot, along with a value missing its scheme, and
+normalises the trailing slash so the value compares equal to the same endpoint on the
+allowlist. Unlike a missing key -- a real deployment mode -- there is no deployment where
+this is empty on purpose, so failing to start is the right response rather than a warning.
+

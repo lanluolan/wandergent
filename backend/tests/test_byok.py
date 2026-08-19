@@ -11,6 +11,7 @@ reached one would be measuring the provider.
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.agent.llm import (
     DEFAULT_BYOK_BASE_URLS,
@@ -297,3 +298,50 @@ def test_the_stream_refuses_a_keyless_server_before_it_starts(monkeypatch) -> No
     response = client.post("/plan/stream", json={"message": "3 days in Los Angeles"})
 
     assert response.status_code == 400
+
+
+def test_a_key_alone_inherits_whatever_the_server_names(monkeypatch) -> None:
+    """The answer to "does .env still matter if I only type a key into the app?"
+
+    It matters completely. Endpoint and model are inherited, so a caller who sends only
+    a key is talking to *this server's* provider with *this server's* model name -- an
+    OpenAI key against a backend pointed elsewhere is a 401, not a working plan. Only
+    OPENAI_API_KEY is genuinely optional.
+    """
+    monkeypatch.setattr(settings, "openai_base_url", "https://api.example.com/v1")
+    monkeypatch.setattr(settings, "openai_model", "server-model")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+
+    override = parse_override("sk-someone-elses", None, None)
+
+    assert override is not None
+    assert override.base_url == "https://api.example.com/v1"
+    assert override.model == "server-model"
+
+
+def test_a_blank_endpoint_is_refused_at_boot() -> None:
+    # It used to sail through as base_url='' -- failing per request with an error naming
+    # neither the setting nor the cause, and putting an empty string on the allowlist.
+    # Unlike a missing key, there is no deployment where this is empty on purpose.
+    from app.config import Settings
+
+    with pytest.raises(ValidationError, match="OPENAI_BASE_URL"):
+        Settings(openai_base_url="   ")
+    with pytest.raises(ValidationError, match="http"):
+        Settings(openai_base_url="api.openai.com/v1")
+
+    # A trailing slash is not an error, just noise; it is normalised away so the value
+    # compares equal to the same endpoint on the allowlist.
+    assert Settings(openai_base_url="https://api.openai.com/v1/").openai_base_url == (
+        "https://api.openai.com/v1"
+    )
+
+
+def test_the_allowlist_never_contains_an_empty_entry(monkeypatch) -> None:
+    # An empty entry would let a request carrying `X-LLM-Base-Url: ` through the gate.
+    monkeypatch.setattr(settings, "llm_byok_base_urls", " , ,, ")
+
+    assert "" not in allowed_byok_base_urls()
+    assert allowed_byok_base_urls() == frozenset(
+        {settings.openai_base_url.rstrip("/"), *DEFAULT_BYOK_BASE_URLS}
+    )

@@ -1,5 +1,6 @@
 """App config. All secrets / external service URLs come from env vars or .env."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,33 @@ class Settings(BaseSettings):
     # a stranger can make this machine send a request to. Fixed public API hosts are safe
     # precisely because they are not caller-chosen; "allow anything" would not be.
     llm_byok_base_urls: str = ""
+
+    @field_validator("openai_base_url")
+    @classmethod
+    def _endpoint_must_be_an_endpoint(cls, value: str) -> str:
+        """Refuse a blank endpoint at boot rather than at the first request.
+
+        It carries more weight than it looks: a caller who brings only an API key --
+        the common case now that most callers bring their own -- inherits this as their
+        endpoint, and it is also the one address always on the BYOK allowlist. Blank
+        produces `base_url=''`, which fails per request with an error that names neither
+        the setting nor the cause, and puts an empty string in the allowlist.
+
+        Unlike a missing `OPENAI_API_KEY`, which is a real deployment mode, there is no
+        deployment in which this is empty on purpose. Leave it unset to get the default;
+        setting it to nothing is a typo.
+        """
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError(
+                "OPENAI_BASE_URL is set to an empty value. Remove the line to use the "
+                "default, or give it a full URL such as https://api.openai.com/v1"
+            )
+        if not cleaned.startswith(("http://", "https://")):
+            raise ValueError(
+                f"OPENAI_BASE_URL must start with http:// or https://, got {cleaned!r}"
+            )
+        return cleaned.rstrip("/")
 
     # Model routing. The first turn of a run only has to read the request and choose
     # tool arguments -- it never writes the itinerary, because that turn is forced to

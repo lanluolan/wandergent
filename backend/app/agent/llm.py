@@ -129,7 +129,10 @@ def allowed_byok_base_urls() -> frozenset[str]:
         if url.strip()
     ]
     allowed = configured or [url.rstrip("/") for url in DEFAULT_BYOK_BASE_URLS]
-    return frozenset({settings.openai_base_url.rstrip("/"), *allowed})
+    own = settings.openai_base_url.rstrip("/")
+    # `own` cannot be blank -- the settings validator refuses that -- but the filter is
+    # cheap and an empty entry here would allow an empty header through.
+    return frozenset(url for url in (own, *allowed) if url)
 
 
 def parse_override(
