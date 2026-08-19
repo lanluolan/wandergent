@@ -51,6 +51,7 @@ import com.wandergent.app.data.DayPlan
 import com.wandergent.app.data.Itinerary
 import com.wandergent.app.data.PlanResponse
 import com.wandergent.app.data.RunWarning
+import com.wandergent.app.data.toolFailureText
 import com.wandergent.app.data.ToolCallRecord
 import com.wandergent.app.data.ValidationReport
 import com.wandergent.app.data.formatMoney
@@ -240,7 +241,8 @@ private fun ToolCallsCard(calls: List<ToolCallRecord>) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Tool calls", style = MaterialTheme.typography.labelLarge)
             calls.forEach { call ->
-                val suffix = if (call.ok) "ok" else "degraded: ${call.error ?: "no reason given"}"
+                val suffix =
+                    if (call.ok) "ok" else "degraded: ${toolFailureText(call.code, call.error)}"
                 Text(
                     "${call.name} — $suffix",
                     style = MaterialTheme.typography.bodySmall,

@@ -14,7 +14,7 @@ import logging
 
 from app.memory import store as default_store
 from app.memory.store import PreferenceStore
-from app.tools.base import ToolOutcome
+from app.tools.base import BAD_REQUEST, ToolOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,9 @@ async def remember_preference(
         return RememberOutcome(ok=True, error=None, stored=[], already_known=[])
 
     if not isinstance(preferences, list):
-        return RememberOutcome(ok=False, error="preferences must be a list of strings")
+        return RememberOutcome(
+            ok=False, error="preferences must be a list of strings", code=BAD_REQUEST
+        )
 
     wanted = [text for text in preferences if isinstance(text, str)][:MAX_PER_CALL]
     target = store or default_store

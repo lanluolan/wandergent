@@ -231,7 +231,9 @@ timeout — the 10 s default cuts it off mid-flight.
 
 - **`itinerary` can be `null` on a `200`** — the model could not produce a valid plan. A `no_itinerary` warning says so, `raw_reply` carries what it said. Render as a failure state; do not crash on the null.
 - **Costs are computed server-side** from the activities. Always present in responses, ignored if sent inbound.
-- **`tool_calls` is an audit trail** in call order, with `ok=false` + `error` when a tool degraded (weather API down, dates beyond the 16-day horizon). A thin-looking plan is usually explained here.
+- **`tool_calls` is an audit trail** in call order, with `ok=false` + a `code` when a tool degraded. A thin-looking plan is usually explained here.
+  - Codes: `not_configured`, `timed_out`, `unavailable`, `no_match`, `bad_request`, `unknown_tool`. **The code is what crosses; the tool's own reason does not.** That sentence is written for the model and quotes upstream, so sending it once put a raw Open-Meteo URL and a link to MDN's page on HTTP 400 onto a traveller's itinerary. Render your own wording from the code.
+  - `error` still appears on trips saved before this change. Treat it as a legacy fallback, not a field to depend on.
 - **`warnings`** are notes about the **run**, distinct from `itinerary.notes` (travel advice) and from `validation` (what is wrong with the *plan*). Those three lists do not overlap: until 2026-08-18 the validation findings were restated here as well, and every client had to suppress the duplicates by comparing sentences.
   - Each entry is `{"code", "detail", "budget", "dropped_calls", "dropped_tools"}`. **Render from `code`; `detail` is English aimed at whoever is debugging** — `reached the 16-call tool budget; skipped 3 further call(s) to search_places` is not something to put in front of a traveller. Fall back to `detail` only for a code you do not recognise.
   - Codes: `tool_calls_dropped` (the model asked for more calls than the budget had left, so some were never made — `dropped_calls` and `dropped_tools` say how many and to what), `tool_calls_spent` and `tool_rounds_spent` (a ceiling ended the research phase; `budget` is the ceiling), `no_itinerary`. All parameters are present on every entry, `null` or `[]` where they do not apply.
@@ -280,7 +282,7 @@ which fields are meaningful and the rest are null:
 |---|---|---|
 | `stage` | `name`, `message` | Coarse phase: `understanding` / `composing` / `repairing`. `name` is stable, `message` is a default Chinese label — localize off `name` if needed |
 | `tool_call` | `name`, `arguments` | The model asked for a tool, with the arguments it chose |
-| `tool_result` | `name`, `ok`, `error` | That tool returned; `ok=false` means degraded, not fatal |
+| `tool_result` | `name`, `ok`, `code` | That tool returned; `ok=false` means degraded, not fatal. `code` is from the closed vocabulary above |
 | `composing` | `message` | A place name recognised in the partially-written itinerary |
 | `validation` | `violations` | The hard-constraint check ran. Empty list = passed. May appear twice: once failing, once passing after repair |
 | `result` | `result` | **Terminal.** Same `PlanResult` shape `/plan` returns |
@@ -291,7 +293,7 @@ event: tool_call
 data: {"type":"tool_call","name":"get_weather_forecast","arguments":{"city":"Los Angeles","start_date":"2026-09-14","end_date":"2026-09-15"},"message":null,"ok":null,"error":null,"result":null}
 
 event: tool_result
-data: {"type":"tool_result","name":"get_weather_forecast","ok":true,"error":null,"message":null,"arguments":null,"result":null}
+data: {"type":"tool_result","name":"get_weather_forecast","ok":true,"code":null,"message":null,"arguments":null,"result":null}
 ```
 
 ### Client notes

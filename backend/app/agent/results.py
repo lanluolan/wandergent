@@ -6,7 +6,7 @@ model can depend on them without a circular import.
 
 from typing import Literal
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 from app.agent.schemas import Itinerary
 from app.agent.validation import ValidationReport
@@ -130,12 +130,22 @@ class Usage(BaseModel):
 
 
 class ToolCallRecord(BaseModel):
-    """What the agent did, surfaced so the client can show tool progress."""
+    """What the agent did, surfaced so the client can show tool progress.
+
+    `code` rather than the tool's `error`, which exists for the model and the logs and
+    quotes upstream verbatim. Sending that was how a raw Open-Meteo URL and a link to the
+    MDN page for HTTP 400 ended up on a traveller's itinerary. The codes are the stable
+    part of this contract; the sentences the client shows for them are the client's.
+    """
 
     name: str
     arguments: dict
     ok: bool
-    error: str | None = None
+    code: str | None = None
+    #: The detailed reason, for the log line at the point of failure. `exclude` keeps it
+    #: out of every serialisation, so it cannot reach the client by being forgotten about
+    #: -- which is how it got there in the first place.
+    error: str | None = Field(default=None, exclude=True)
 
 
 class PlanResult(BaseModel):

@@ -44,7 +44,9 @@ class PlanEvent(BaseModel):
     name: str | None = None
     arguments: dict | None = None
     ok: bool | None = None
-    error: str | None = None
+    #: Why the call did not deliver, from the closed vocabulary in `app/tools/base.py`.
+    #: Not the tool's `error`: that is written for the model and quotes upstream.
+    code: str | None = None
 
     # validation
     violations: list[Violation] | None = None

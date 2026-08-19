@@ -1769,3 +1769,40 @@ that was already there for the same reason. Tests about the *absence* of a setti
 monkeypatch it back themselves, which wins and is undone the same way. Confirmed by running
 the suite with all four variables explicitly empty.
 
+## A tool's reason is written for the model, not the traveller (2026-08-19)
+
+Second half of the live-run finding above. Fixing the weather horizon removed the most
+frequent instance; the shape of the bug was still there for every other tool.
+
+`ToolOutcome.error` had one string serving two readers. The model needs the detail --
+which service, what it said -- to route around a failure. The traveller needs a short
+phrase. Twelve of the roughly thirty error sites embedded `{exc}`, an upstream body or a
+provider status, so what the traveller got was
+`weather service unavailable: Client error '400 Bad Request' for url
+'https://api.open-meteo.com/v1/forecast?latitude=34.05223&longitude=...'` followed by a
+link to MDN.
+
+`ToolOutcome` gains `code` from a closed vocabulary -- `not_configured`, `timed_out`,
+`unavailable`, `no_match`, `bad_request`, `unknown_tool` -- and only the code crosses to
+the client, which owns the wording. Exactly the split the run warnings already use, which
+is the point: the same mistake had already been fixed once, one layer over.
+
+`error` stays for the model and the log and is `Field(exclude=True)` on `ToolCallRecord`,
+so it cannot reach a client by being forgotten about -- which is how it got there. An
+`ast` sweep over `app/tools/` checks the other direction: no `ok=False` construction is
+missing a code.
+
+The client keeps reading the old `error` field, because `PlanResult` is stored verbatim
+for saved trips and those carry sentences rather than codes. Dropping it would have made
+every trip saved before today explain nothing.
+
+## A failure reason needs its own line (2026-08-19)
+
+`ToolProgressRow` put the label and the status in a `Row` with `SpaceBetween` and no width
+constraint on either. That is fine while the right-hand side is "running" or "done". Handed
+a sentence, it had no room to lay out and wrapped **one character per line**, down the
+right edge of the screen -- seen on a live run the moment the weather lookup failed.
+
+The status slot now only ever holds a status word, the reason gets its own full-width line
+below, and the label takes `weight(1f)` so it yields rather than pushing the status out.
+

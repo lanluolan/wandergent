@@ -10,6 +10,7 @@ from app.agent.events import PlanEvent
 from app.agent.orchestrator import PlanningTimeout, stream_plan
 from app.agent.results import PlanResult, tool_calls_spent
 from app.main import app
+from app.tools.base import UNAVAILABLE
 from app.tools.registry import TOOL_FUNCTIONS
 from app.tools.weather import WeatherForecast
 from tests.fakes import ITINERARY_JSON, FakeLLM, completion, tool_call
@@ -73,9 +74,21 @@ async def test_tool_arguments_are_reassembled_from_fragments(stub_weather) -> No
     }
 
 
-async def test_tool_result_carries_the_outcome(stub_weather, monkeypatch) -> None:
+async def test_tool_result_carries_the_code_and_not_the_detail(stub_weather, monkeypatch) -> None:
+    """The client is told *what kind* of failure, never the upstream text.
+
+    The detail exists for the model and the log, and quotes upstream verbatim -- which is
+    how a raw Open-Meteo URL and a link to the MDN page for HTTP 400 reached a traveller's
+    itinerary. Only the code crosses.
+    """
+
     async def failing(city: str, **kwargs) -> WeatherForecast:
-        return WeatherForecast(ok=False, city=city, error="weather service timed out")
+        return WeatherForecast(
+            ok=False,
+            city=city,
+            error="weather service unavailable: Client error '400' for url 'https://api...'",
+            code=UNAVAILABLE,
+        )
 
     monkeypatch.setitem(TOOL_FUNCTIONS, "get_weather_forecast", failing)
     llm = FakeLLM([weather_turn(), completion(content=ITINERARY_JSON)])
@@ -84,7 +97,28 @@ async def test_tool_result_carries_the_outcome(stub_weather, monkeypatch) -> Non
     result_event = next(event for event in events if event.type == "tool_result")
 
     assert result_event.ok is False
-    assert result_event.error == "weather service timed out"
+    assert result_event.code == UNAVAILABLE
+    assert "api..." not in result_event.model_dump_json()
+
+
+async def test_the_detail_never_reaches_the_serialised_result(stub_weather, monkeypatch) -> None:
+    # `PlanResult` is what the app stores verbatim for a saved trip, so a leak here is
+    # permanent rather than momentary.
+    async def failing(city: str, **kwargs) -> WeatherForecast:
+        return WeatherForecast(
+            ok=False, city=city, error="geocoding unavailable: https://internal", code=UNAVAILABLE
+        )
+
+    monkeypatch.setitem(TOOL_FUNCTIONS, "get_weather_forecast", failing)
+    llm = FakeLLM([weather_turn(), completion(content=ITINERARY_JSON)])
+
+    events = await collect(llm)
+    result = next(event for event in events if event.type == "result").result
+
+    assert result is not None
+    body = result.model_dump_json()
+    assert "internal" not in body
+    assert UNAVAILABLE in body
 
 
 async def test_composing_events_name_what_is_being_written(stub_weather) -> None:

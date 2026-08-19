@@ -165,12 +165,20 @@ data class Activity(
     val notes: String? = null,
 )
 
-/** One tool the agent invoked. `arguments` is free-form, so it stays raw JSON. */
+/**
+ * One tool the agent invoked. `arguments` is free-form, so it stays raw JSON.
+ *
+ * `code` says what kind of failure; the wording for it lives on this side. `error` is
+ * what the backend used to send instead -- its own developer sentence, upstream URLs and
+ * all -- and is kept only so trips saved before the change still open. Room stores the
+ * response verbatim, so dropping the field would make those fail to parse.
+ */
 @Serializable
 data class ToolCallRecord(
     val name: String,
     val arguments: JsonObject = JsonObject(emptyMap()),
     val ok: Boolean,
+    val code: String? = null,
     val error: String? = null,
 )
 

@@ -14,7 +14,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.tools.base import ToolOutcome
+from app.tools.base import (
+    BAD_REQUEST,
+    UNAVAILABLE,
+    UNKNOWN_TOOL,
+    ToolOutcome,
+)
 from app.tools.maps import (
     PLACES_TOOL_SCHEMA,
     TRAVEL_TOOL_SCHEMA,
@@ -68,7 +73,9 @@ async def call_tool(
     fn = TOOL_FUNCTIONS.get(name)
     if fn is None:
         known = ", ".join(sorted(TOOL_FUNCTIONS)) or "none"
-        return ToolOutcome(ok=False, error=f"unknown tool {name!r}; available tools: {known}")
+        return ToolOutcome(
+            ok=False, error=f"unknown tool {name!r}; available tools: {known}", code=UNKNOWN_TOOL
+        )
 
     call_kwargs = dict(arguments)
     if _accepts_context(fn):
@@ -77,9 +84,9 @@ async def call_tool(
     try:
         return await fn(**call_kwargs)
     except TypeError as exc:
-        return ToolOutcome(ok=False, error=f"bad arguments for {name}: {exc}")
+        return ToolOutcome(ok=False, error=f"bad arguments for {name}: {exc}", code=BAD_REQUEST)
     except Exception as exc:  # noqa: BLE001 - deliberate boundary, see docstring
         # Tools promise not to raise, but this is the seam between model-chosen input
         # and our code; one misbehaving tool must not take the whole request down.
         logger.exception("tool %s raised unexpectedly", name)
-        return ToolOutcome(ok=False, error=f"{name} failed unexpectedly: {exc}")
+        return ToolOutcome(ok=False, error=f"{name} failed unexpectedly: {exc}", code=UNAVAILABLE)

@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.violationLabel
+import com.wandergent.app.data.toolFailureText
 
 /** How wide a message bubble may get, as a share of the row. */
 private const val BUBBLE_MAX_WIDTH = 0.86f
@@ -314,15 +315,30 @@ private fun ToolProgressRow(tool: ToolProgress) {
     val (status, color) = when (tool.ok) {
         null -> "running" to MaterialTheme.colorScheme.onSurfaceVariant
         true -> "done" to MaterialTheme.colorScheme.primary
-        false -> (tool.error ?: "degraded") to MaterialTheme.colorScheme.error
+        false -> "failed" to MaterialTheme.colorScheme.error
     }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(status, style = MaterialTheme.typography.bodySmall, color = color)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            // `weight` so the label yields rather than pushing the status out of the row.
+            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(status, style = MaterialTheme.typography.bodySmall, color = color)
+        }
+        if (tool.ok == false) {
+            // The reason gets its own full-width line rather than sharing the status
+            // slot. A sentence there had no room to lay out and wrapped one character
+            // per line, down the right edge -- seen on a live run when the weather
+            // lookup failed.
+            Text(
+                toolFailureText(tool.code),
+                style = MaterialTheme.typography.bodySmall,
+                color = color,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 

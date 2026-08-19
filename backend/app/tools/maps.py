@@ -32,7 +32,14 @@ from typing import Any, Literal
 import httpx
 
 from app.config import settings
-from app.tools.base import ToolOutcome
+from app.tools.base import (
+    BAD_REQUEST,
+    NO_MATCH,
+    NOT_CONFIGURED,
+    TIMED_OUT,
+    UNAVAILABLE,
+    ToolOutcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +278,7 @@ async def search_places(
 ) -> PlacesResult:
     """Find venues matching `query` in `near`. Never raises; degrades to ok=False."""
     if not settings.google_maps_api_key:
-        return PlacesResult(ok=False, query=query, error=MISSING_KEY)
+        return PlacesResult(ok=False, query=query, error=MISSING_KEY, code=NOT_CONFIGURED)
 
     if client is not None:
         return await _search(client, query, near, limit, language)
@@ -300,14 +307,21 @@ async def _search(
         found = response.json().get("places") or []
     except httpx.TimeoutException:
         logger.warning("places search timed out for %r", text_query)
-        return PlacesResult(ok=False, query=text_query, error="place search timed out")
+        return PlacesResult(
+            ok=False, query=text_query, error="place search timed out", code=TIMED_OUT
+        )
     except httpx.HTTPError as exc:
         logger.warning("places search failed for %r: %s", text_query, exc)
-        return PlacesResult(ok=False, query=text_query, error=f"place search unavailable: {exc}")
+        return PlacesResult(
+            ok=False, query=text_query, error=f"place search unavailable: {exc}", code=UNAVAILABLE
+        )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected places payload for %r: %s", text_query, exc)
         return PlacesResult(
-            ok=False, query=text_query, error=f"unexpected response from place search: {exc}"
+            ok=False,
+            query=text_query,
+            error=f"unexpected response from place search: {exc}",
+            code=UNAVAILABLE,
         )
 
     if not found:
@@ -319,6 +333,7 @@ async def _search(
             query=text_query,
             places=[],
             error=f"no places matched {text_query!r}; try a broader query",
+            code=NO_MATCH,
         )
 
     # Dropped here rather than described to the model. A permanently closed venue is
@@ -337,6 +352,7 @@ async def _search(
             query=text_query,
             places=[],
             error=f"every match for {text_query!r} has closed permanently; try another query",
+            code=NO_MATCH,
         )
 
     return PlacesResult(
@@ -385,9 +401,9 @@ async def render_day_map(
     """
     usable = [place.strip() for place in places if place and place.strip()][:MAX_MAP_PLACES]
     if not usable:
-        return StaticMap(ok=False, error="no places with a location to draw")
+        return StaticMap(ok=False, error="no places with a location to draw", code=NO_MATCH)
     if not settings.google_maps_api_key:
-        return StaticMap(ok=False, places=usable, error=MISSING_KEY)
+        return StaticMap(ok=False, places=usable, error=MISSING_KEY, code=NOT_CONFIGURED)
 
     if client is not None:
         return await _render(client, usable, width, height)
@@ -404,16 +420,21 @@ async def _render(
         response = await client.get(STATIC_MAP_URL, params=params)
         response.raise_for_status()
     except httpx.TimeoutException:
-        return StaticMap(ok=False, places=places, error="map service timed out")
+        return StaticMap(ok=False, places=places, error="map service timed out", code=TIMED_OUT)
     except httpx.HTTPError as exc:
         logger.warning("static map failed for %s: %s", places, exc)
-        return StaticMap(ok=False, places=places, error=f"map service unavailable: {exc}")
+        return StaticMap(
+            ok=False, places=places, error=f"map service unavailable: {exc}", code=UNAVAILABLE
+        )
 
     if not response.headers.get("content-type", "").startswith("image"):
         # Static Maps answers a bad request with a text body and a 200, so the content
         # type is the only reliable signal that an image actually came back.
         return StaticMap(
-            ok=False, places=places, error=f"map service returned {response.text[:120]!r}"
+            ok=False,
+            places=places,
+            error=f"map service returned {response.text[:120]!r}",
+            code=UNAVAILABLE,
         )
     return StaticMap(ok=True, places=places, image=response.content)
 
@@ -446,7 +467,10 @@ async def geocode_places(
     if not usable:
         return []
     if not settings.google_maps_api_key:
-        return [GeocodedPlace(ok=False, query=place, error=MISSING_KEY) for place in usable]
+        return [
+            GeocodedPlace(ok=False, query=place, error=MISSING_KEY, code=NOT_CONFIGURED)
+            for place in usable
+        ]
 
     if client is not None:
         return await _geocode_all(client, usable, language)
@@ -476,22 +500,29 @@ async def _geocode_one(client: httpx.AsyncClient, place: str, language: str) -> 
         response.raise_for_status()
         payload = response.json()
     except httpx.TimeoutException:
-        return GeocodedPlace(ok=False, query=place, error="geocoding timed out")
+        return GeocodedPlace(ok=False, query=place, error="geocoding timed out", code=TIMED_OUT)
     except httpx.HTTPError as exc:
         logger.warning("geocoding failed for %r: %s", place, exc)
-        return GeocodedPlace(ok=False, query=place, error=f"geocoding unavailable: {exc}")
+        return GeocodedPlace(
+            ok=False, query=place, error=f"geocoding unavailable: {exc}", code=UNAVAILABLE
+        )
 
     results = payload.get("results") or []
     if not results:
         # ZERO_RESULTS is a fact, not an outage: this address does not resolve.
         return GeocodedPlace(
-            ok=False, query=place, error=f"no location for {place!r} ({payload.get('status')})"
+            ok=False,
+            query=place,
+            error=f"no location for {place!r} ({payload.get('status')})",
+            code=NO_MATCH,
         )
 
     location = results[0].get("geometry", {}).get("location", {})
     latitude, longitude = location.get("lat"), location.get("lng")
     if latitude is None or longitude is None:
-        return GeocodedPlace(ok=False, query=place, error="geocoding returned no coordinates")
+        return GeocodedPlace(
+            ok=False, query=place, error="geocoding returned no coordinates", code=NO_MATCH
+        )
     return GeocodedPlace(
         ok=True,
         query=place,
@@ -580,7 +611,12 @@ async def get_travel_time(
     """
     if not settings.google_maps_api_key:
         return TravelTime(
-            ok=False, origin=origin, destination=destination, mode=mode, error=MISSING_KEY
+            ok=False,
+            origin=origin,
+            destination=destination,
+            mode=mode,
+            error=MISSING_KEY,
+            code=NOT_CONFIGURED,
         )
 
     chosen = (mode or "WALK").upper()
@@ -591,6 +627,7 @@ async def get_travel_time(
             destination=destination,
             mode=chosen,
             error=f"mode must be WALK, DRIVE or TRANSIT, got {mode!r}",
+            code=BAD_REQUEST,
         )
 
     if client is not None:
@@ -671,6 +708,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error="route service timed out",
+            code=TIMED_OUT,
         )
     except httpx.HTTPError as exc:
         logger.warning("route lookup failed for %s -> %s: %s", origin, destination, exc)
@@ -680,6 +718,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error=f"route service unavailable: {exc}",
+            code=UNAVAILABLE,
         )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected route payload for %s -> %s: %s", origin, destination, exc)
@@ -689,6 +728,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error=f"unexpected response from route service: {exc}",
+            code=UNAVAILABLE,
         )
 
     if not routes:
@@ -700,6 +740,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error=f"no {mode.lower()} route found between these places",
+            code=NO_MATCH,
         )
 
     route = routes[0]

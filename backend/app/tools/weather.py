@@ -18,7 +18,13 @@ import httpx
 from pydantic import BaseModel
 
 from app.config import settings
-from app.tools.base import ToolOutcome
+from app.tools.base import (
+    BAD_REQUEST,
+    NO_MATCH,
+    TIMED_OUT,
+    UNAVAILABLE,
+    ToolOutcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,15 +306,21 @@ async def _forecast(
         end = _parse_date(end_date)
     except (TypeError, ValueError):
         return WeatherForecast(
-            ok=False, city=city, error="dates must be ISO formatted, e.g. 2026-08-05"
+            ok=False,
+            city=city,
+            error="dates must be ISO formatted, e.g. 2026-08-05",
+            code=BAD_REQUEST,
         )
 
     if end < start:
-        return WeatherForecast(ok=False, city=city, error="end_date is before start_date")
+        return WeatherForecast(
+            ok=False, city=city, error="end_date is before start_date", code=BAD_REQUEST
+        )
 
     window = _clamp_range(start, end, today or date.today())
     if window.error is not None:
-        return WeatherForecast(ok=False, city=city, error=window.error)
+        # Every clamp error is a malformed request -- the dates cannot be answered for.
+        return WeatherForecast(ok=False, city=city, error=window.error, code=BAD_REQUEST)
     if window.start is None or window.end is None:
         # Not a failure: a trip planned a month out simply has no forecast yet. Reporting
         # it as one put "weather service unavailable" plus a raw upstream URL on the
@@ -319,7 +331,9 @@ async def _forecast(
     try:
         place = await _geocode(client, city, language)
         if place is None:
-            return WeatherForecast(ok=False, city=city, error=f"no location found for {city!r}")
+            return WeatherForecast(
+                ok=False, city=city, error=f"no location found for {city!r}", code=NO_MATCH
+            )
 
         latitude = place["latitude"]
         longitude = place["longitude"]
@@ -327,14 +341,21 @@ async def _forecast(
         days = _to_daily_forecasts(daily)
     except httpx.TimeoutException:
         logger.warning("weather lookup timed out for %s", city)
-        return WeatherForecast(ok=False, city=city, error="weather service timed out")
+        return WeatherForecast(
+            ok=False, city=city, error="weather service timed out", code=TIMED_OUT
+        )
     except httpx.HTTPError as exc:
         logger.warning("weather lookup failed for %s: %s", city, exc)
-        return WeatherForecast(ok=False, city=city, error=f"weather service unavailable: {exc}")
+        return WeatherForecast(
+            ok=False, city=city, error=f"weather service unavailable: {exc}", code=UNAVAILABLE
+        )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected weather payload for %s: %s", city, exc)
         return WeatherForecast(
-            ok=False, city=city, error=f"unexpected response from weather service: {exc}"
+            ok=False,
+            city=city,
+            error=f"unexpected response from weather service: {exc}",
+            code=UNAVAILABLE,
         )
 
     return WeatherForecast(

@@ -25,7 +25,8 @@ data class ToolProgress(
     val name: String,
     val subject: String?,
     val ok: Boolean? = null,
-    val error: String? = null,
+    /** Failure kind from the backend; the wording for it is [toolFailureText]. */
+    val code: String? = null,
 )
 
 /** What the agent is doing right now, accumulated from the event stream. */
@@ -364,7 +365,7 @@ internal fun reduceProgress(current: LiveProgress, event: PlanEventDto): LivePro
                     current.copy(
                         tools = current.tools.mapIndexed { index, tool ->
                             if (index == target) {
-                                tool.copy(ok = event.ok, error = event.error)
+                                tool.copy(ok = event.ok, code = event.code)
                             } else {
                                 tool
                             }

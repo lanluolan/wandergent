@@ -21,6 +21,9 @@ data class PlanEventDto(
     val name: String? = null,
     val arguments: JsonObject? = null,
     val ok: Boolean? = null,
+    /** Failure kind for `tool_result`; the sentence for it is written on this side. */
+    val code: String? = null,
+    /** What older backends sent instead: their own developer sentence. */
     val error: String? = null,
     val violations: List<Violation>? = null,
     val result: PlanResponse? = null,
@@ -54,6 +57,28 @@ fun warningText(warning: RunWarning): String = when (warning.code) {
         "Built on less research than usual: the planner hit its lookup limit before it " +
             "had checked everything. Worth confirming opening times and prices yourself."
     else -> warning.detail
+}
+
+/**
+ * What a failed tool call should say to the person reading the plan.
+ *
+ * Same split as [warningText], for the same reason and after the same failure: the
+ * backend's `error` is written for the model and quotes upstream, so a weather lookup
+ * that 400ed showed the traveller the full Open-Meteo URL and a link to MDN's page on
+ * HTTP 400. The backend now sends a code and the sentence is written here.
+ *
+ * `legacy` is the old field, still present on trips saved before the change. Showing it
+ * is worse than showing nothing only in theory -- in practice a saved trip with no
+ * explanation at all is worse, and those sentences were at least accurate.
+ */
+fun toolFailureText(code: String?, legacy: String? = null): String = when (code) {
+    "not_configured" -> "not set up on this server"
+    "timed_out" -> "took too long"
+    "unavailable" -> "the service was unreachable"
+    "no_match" -> "nothing matched"
+    "bad_request" -> "the request could not be answered"
+    "unknown_tool" -> "not available on this server"
+    else -> legacy ?: "did not complete"
 }
 
 /** Human label for a violation code; the code is the stable part of the contract. */

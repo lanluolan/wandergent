@@ -372,7 +372,13 @@ async def _execute_tool_call(call, context: dict) -> tuple[ToolCallRecord, dict]
         else:
             outcome = await call_tool(call.name, arguments, context=context)
 
-    record = ToolCallRecord(name=call.name, arguments=arguments, ok=outcome.ok, error=outcome.error)
+    record = ToolCallRecord(
+        name=call.name,
+        arguments=arguments,
+        ok=outcome.ok,
+        code=outcome.code,
+        error=outcome.error,
+    )
     reply = {"role": "tool", "tool_call_id": call.id, "content": outcome.model_dump_json()}
     return record, reply
 
@@ -516,7 +522,7 @@ async def run_tools(state: PlanState) -> dict:
         harvest_place_points(record.name, reply["content"], points)
         if not record.ok:
             logger.info("tool %s degraded: %s", record.name, record.error)
-        writer(PlanEvent(type="tool_result", name=record.name, ok=record.ok, error=record.error))
+        writer(PlanEvent(type="tool_result", name=record.name, ok=record.ok, code=record.code))
 
     # Hand the model a digest of everything verified so far -- hours, price bands and
     # distances -- *before* it picks venues and times, rather than leaving it to re-read

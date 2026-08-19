@@ -19,8 +19,8 @@ class LiveProgressTest {
 
     private fun stage(message: String) = PlanEventDto(type = PlanEventDto.STAGE, message = message)
     private fun call(name: String) = PlanEventDto(type = PlanEventDto.TOOL_CALL, name = name)
-    private fun result(name: String, ok: Boolean, error: String? = null) =
-        PlanEventDto(type = PlanEventDto.TOOL_RESULT, name = name, ok = ok, error = error)
+    private fun result(name: String, ok: Boolean, code: String? = null) =
+        PlanEventDto(type = PlanEventDto.TOOL_RESULT, name = name, ok = ok, code = code)
 
     private fun fold(vararg events: PlanEventDto): LiveProgress =
         events.fold(LiveProgress()) { acc, e -> reduceProgress(acc, e) }
@@ -66,11 +66,11 @@ class LiveProgressTest {
             call("search_places"),
             call("search_places"),
             result("search_places", ok = true),
-            result("search_places", ok = false, error = "timed out"),
+            result("search_places", ok = false, code = "timed_out"),
         )
 
         assertEquals(listOf(true, false), progress.tools.map { it.ok })
-        assertEquals("timed out", progress.tools[1].error)
+        assertEquals("timed_out", progress.tools[1].code)
     }
 
     @Test
