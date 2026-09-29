@@ -10,6 +10,7 @@ import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
+import httpx
 from openai import APIError, APITimeoutError, AsyncOpenAI
 from pydantic import ValidationError
 
@@ -273,7 +274,10 @@ async def stream_turn(
                         slot.name += fragment.function.name
                     if fragment.function.arguments:
                         slot.arguments += fragment.function.arguments
-    except APITimeoutError as exc:
+    except (APITimeoutError, httpx.TimeoutException) as exc:
         raise PlanningTimeout("the language model timed out") from exc
-    except APIError as exc:
-        raise PlanningError(f"the language model is unavailable: {exc}") from exc
+    except (APIError, httpx.HTTPError) as exc:
+        # Provider messages can contain endpoint URLs, request ids or response bodies.
+        # Preserve the exception as the cause for server logs; the API gets a stable,
+        # text-free error just like tool failures do.
+        raise PlanningError("the language model is unavailable") from exc

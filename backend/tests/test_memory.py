@@ -1,6 +1,7 @@
 """Memory: the store, the tool that writes to it, and the recall that reads it back."""
 
-from datetime import date
+import sqlite3
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -73,6 +74,30 @@ async def test_unknown_user_has_no_memory(store) -> None:
     assert await store.recall("nobody") == []
 
 
+async def test_existing_database_is_migrated_for_semantic_keys(tmp_path) -> None:
+    path = tmp_path / "legacy-memory.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE preferences ("
+            "user_id TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, "
+            "PRIMARY KEY (user_id, text))"
+        )
+        connection.execute(
+            "INSERT INTO preferences (user_id, text, created_at) VALUES (?, ?, ?)",
+            ("alice", "avoids hiking", datetime.now(UTC).isoformat()),
+        )
+    migrated = PreferenceStore(path)
+
+    await migrated.remember("alice", ["is vegetarian"], keys=["diet:vegetarian"])
+
+    recalled = await migrated.recall("alice")
+    assert {preference.text for preference in recalled} == {
+        "avoids hiking",
+        "is vegetarian",
+    }
+    assert next(p for p in recalled if p.text == "is vegetarian").key == "diet:vegetarian"
+
+
 # --- the tool ----------------------------------------------------------------------
 
 
@@ -84,6 +109,29 @@ async def test_the_tool_writes_to_the_user_in_context(store) -> None:
     assert outcome.ok
     assert outcome.stored == ["avoids hiking"]
     assert [p.text for p in await store.recall("alice")] == ["avoids hiking"]
+
+
+async def test_one_off_memory_candidates_are_reported_but_not_persisted(store) -> None:
+    outcome = await remember_preference(
+        [
+            {
+                "key": "trip:destination",
+                "text": "is visiting Los Angeles this week",
+                "scope": "this_trip",
+            },
+            {
+                "key": "diet:vegetarian",
+                "text": "is vegetarian",
+                "scope": "durable",
+            },
+        ],
+        context={"user_id": "alice"},
+        store=store,
+    )
+
+    assert outcome.ignored_one_off == ["is visiting Los Angeles this week"]
+    assert outcome.stored == ["is vegetarian"]
+    assert [preference.text for preference in await store.recall("alice")] == ["is vegetarian"]
 
 
 async def test_the_tool_is_a_no_op_without_a_user(store) -> None:

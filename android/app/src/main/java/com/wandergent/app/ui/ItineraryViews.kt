@@ -87,6 +87,7 @@ internal fun LazyListScope.planItems(
             }
         }
         item(key = "$key-save") { SaveButton(saved, onSave) }
+        item(key = "$key-feedback") { FeedbackButton(response) }
         itemsIndexed(itinerary.days, key = { index, _ -> "$key-day-$index" }) { index, day ->
             DayTimelineCard(day, itinerary.currency, dayNumber = index + 1)
         }

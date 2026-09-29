@@ -39,10 +39,15 @@ data class PlanRequest(
      * validate-repair-revalidate cycle, so an edit cannot quietly bust the budget.
      */
     val previous: Itinerary? = null,
+    @SerialName("previous_constraints") val previousConstraints: TripConstraints? = null,
+    val constraints: TripConstraints? = null,
 )
 
 @Serializable
 data class PlanResponse(
+    @SerialName("run_id") val runId: String? = null,
+    @SerialName("feedback_available") val feedbackAvailable: Boolean = false,
+    val constraints: TripConstraints? = null,
     val itinerary: Itinerary? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCallRecord> = emptyList(),
     val warnings: List<@Serializable(with = TolerantRunWarning::class) RunWarning> = emptyList(),
@@ -105,7 +110,7 @@ data class ValidationReport(val violations: List<Violation> = emptyList()) {
 }
 
 /** Mirrors `ADVISORY_CODES` in `app/agent/validation.py`; the code is the stable contract. */
-private val ADVISORY_CODES = setOf("overlong_day", "unsociable_hours")
+private val ADVISORY_CODES = setOf("overlong_day", "unsociable_hours", "transfer_unverified")
 
 @Serializable
 data class Violation(
@@ -147,6 +152,7 @@ data class Activity(
     val title: String,
     val category: String = "other",
     val location: String? = null,
+    @SerialName("travel_mode") val travelMode: String? = null,
     val indoor: Boolean? = null,
     @SerialName("estimated_cost") val estimatedCost: Double = 0.0,
     /** Dishes to order, exhibits worth the queue, what to book ahead. Often empty. */
@@ -172,3 +178,15 @@ data class ToolCallRecord(
 /** FastAPI's error envelope, used for every non-2xx response. */
 @Serializable
 data class ApiError(val detail: String? = null)
+
+
+@Serializable
+data class TripConstraints(
+    val budget: Double? = null,
+    val currency: String? = null,
+    @SerialName("start_date") val startDate: String? = null,
+    @SerialName("end_date") val endDate: String? = null,
+    val days: Int? = null,
+    val travelers: Int? = null,
+    @SerialName("allowed_modes") val allowedModes: List<String>? = null,
+)

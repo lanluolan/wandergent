@@ -15,10 +15,11 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app import mail
 from app import ratelimit as ratelimits
+from app.agent.constraints import TripConstraints, resolve_constraints
 from app.agent.events import PlanEvent
 from app.agent.orchestrator import (
     PlanningConfigError,
@@ -53,6 +54,7 @@ from app.community.store import (
     SharedPlan,
 )
 from app.config import settings
+from app.feedback import FeedbackRequest, FeedbackStore
 from app.map_page import day_map_page
 from app.memory import store as memory_store
 from app.memory.store import MAX_PREFERENCES_STORED
@@ -67,6 +69,7 @@ logging.basicConfig(level=logging.DEBUG if settings.debug else logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+feedback_store = FeedbackStore(settings.feedback_db_path)
 
 
 @asynccontextmanager
@@ -93,6 +96,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             "instead of emailed. Fine on a laptop; on a reachable server it means anyone "
             "who can read the logs can take over any account."
         )
+    try:
+        removed = await feedback_store.prune()
+        if removed:
+            logger.info("deleted %s expired feedback run(s)", removed)
+    except (sqlite3.Error, OSError):
+        logger.warning("feedback retention cleanup unavailable at startup")
     yield
 
 
@@ -238,6 +247,18 @@ class PlanRequest(BaseModel):
     # service is stateless. A revision runs the same validate-repair-revalidate cycle as a
     # fresh plan, so an edit cannot quietly put the trip over budget. Null plans anew.
     previous: Itinerary | None = None
+    constraints: TripConstraints | None = None
+    previous_constraints: TripConstraints | None = None
+
+    @model_validator(mode="after")
+    def check_constraints(self) -> "PlanRequest":
+        resolve_constraints(
+            self.message,
+            previous=self.previous_constraints,
+            confirmed=self.constraints,
+            currency=self.currency,
+        )
+        return self
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -262,12 +283,16 @@ async def plan(
     # traveller's runs count against another's.
     enforce_plan_budget(f"plan:{account.id if account else caller(request)}")
     try:
-        return await plan_trip(
+        result = await plan_trip(
             payload.message,
             user_id=account.id if account else "",
             currency=payload.currency.upper(),
             previous=payload.previous,
+            constraints=payload.constraints,
+            previous_constraints=payload.previous_constraints,
         )
+        await retain_feedback_run(account, result)
+        return result
     except PlanningConfigError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except PlanningTimeout as exc:
@@ -373,7 +398,11 @@ async def plan_stream(
                 user_id=account.id if account else "",
                 currency=payload.currency.upper(),
                 previous=payload.previous,
+                constraints=payload.constraints,
+                previous_constraints=payload.previous_constraints,
             ):
+                if event.type == "result" and event.result is not None:
+                    await retain_feedback_run(account, event.result)
                 yield _sse(event)
         except PlanningError as exc:
             logger.info("stream failed: %s", exc)
@@ -713,4 +742,29 @@ async def confirm_verification(
 
     if not await auth_store.complete_verification(account.id, payload.code):
         raise HTTPException(status_code=400, detail="that code is not valid, or it has expired")
+    return Response(status_code=204)
+
+
+async def retain_feedback_run(account: Account | None, result: PlanResult) -> None:
+    if account is None:
+        return
+    try:
+        await feedback_store.record(account.id, result)
+        result.feedback_available = True
+    except (sqlite3.Error, OSError):
+        logger.warning("feedback snapshot unavailable")
+
+
+@app.post("/feedback", status_code=204)
+async def submit_feedback(
+    payload: FeedbackRequest,
+    account: Annotated[Account, Depends(signed_in)],
+) -> Response:
+    enforce(f"feedback:{account.id}", ratelimits.FEEDBACK)
+    try:
+        found = await feedback_store.submit(account.id, payload)
+    except (sqlite3.Error, OSError) as exc:
+        raise HTTPException(status_code=503, detail="Feedback is temporarily unavailable") from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="This feedback target is unavailable")
     return Response(status_code=204)

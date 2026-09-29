@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     memory_db_path: str = "wandergent-memory.db"
     community_db_path: str = "wandergent-community.db"
     auth_db_path: str = "wandergent-auth.db"
+    feedback_db_path: str = "wandergent-feedback.db"
 
     # The only ceiling on the daily bill, counted in planning runs because they are the
     # one thing here that costs money. A setting, not a constant: only the person paying

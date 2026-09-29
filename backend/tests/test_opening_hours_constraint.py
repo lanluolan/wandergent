@@ -309,7 +309,7 @@ async def test_the_repair_instruction_carries_the_real_hours(stub_search) -> Non
 async def test_an_unrepaired_closure_ships_as_a_warning_not_a_silent_pass(
     stub_search,
 ) -> None:
-    """One repair round is the budget. What survives it must be surfaced, not hidden."""
+    """What survives the bounded repairs must be surfaced, not hidden."""
     llm = FakeLLM(
         [
             completion(
@@ -317,6 +317,8 @@ async def test_an_unrepaired_closure_ships_as_a_warning_not_a_silent_pass(
             ),
             completion(content=itinerary_at("09:00", "12:00")),
             completion(content=itinerary_at("08:00", "10:00")),  # still shut
+            completion(content=itinerary_at("08:00", "10:00")),
+            completion(content=itinerary_at("08:00", "10:00")),
         ]
     )
 

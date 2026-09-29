@@ -5,9 +5,11 @@ model can depend on them without a circular import.
 """
 
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field
 
+from app.agent.constraints import TripConstraints
 from app.agent.schemas import Itinerary
 from app.agent.validation import ValidationReport
 
@@ -140,6 +142,10 @@ class ToolCallRecord(BaseModel):
 class PlanResult(BaseModel):
     """Outcome of one planning run."""
 
+    run_id: str = Field(default_factory=lambda: uuid4().hex)
+    feedback_available: bool = False
+
+    constraints: TripConstraints = TripConstraints()
     itinerary: Itinerary | None = None
     tool_calls: list[ToolCallRecord] = []
 

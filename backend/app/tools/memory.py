@@ -9,9 +9,10 @@ the registry -- a model that can name whose memory it writes to can write into a
 """
 
 import logging
+import re
 
 from app.memory import store as default_store
-from app.memory.store import PreferenceStore
+from app.memory.store import Preference, PreferenceStore
 from app.tools.base import BAD_REQUEST, ToolOutcome
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ MAX_PER_CALL = 5
 class RememberOutcome(ToolOutcome):
     stored: list[str] = []
     already_known: list[str] = []
+    ignored_one_off: list[str] = []
+
+
+_KEY = re.compile(r"^[a-z0-9][a-z0-9_.:-]{2,79}$")
 
 
 REMEMBER_TOOL_SCHEMA: dict = {
@@ -42,10 +47,38 @@ REMEMBER_TOOL_SCHEMA: dict = {
             "properties": {
                 "preferences": {
                     "type": "array",
-                    "items": {"type": "string"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9][a-z0-9_.:-]{2,79}$",
+                                "description": (
+                                    "Language-independent semantic slot, e.g. "
+                                    "'interest:museums' or 'avoid:hiking'. Reuse the same "
+                                    "key when correcting or translating the same preference."
+                                ),
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Short canonical statement in English.",
+                            },
+                            "scope": {
+                                "type": "string",
+                                "enum": ["durable", "this_trip"],
+                                "description": (
+                                    "durable only if it should apply in another city and "
+                                    "on another date; otherwise this_trip."
+                                ),
+                            },
+                        },
+                        "required": ["key", "text", "scope"],
+                        "additionalProperties": False,
+                    },
                     "description": (
-                        "Short statements in the third person, e.g. 'avoids hiking', "
-                        "'loves regional food', 'travels with a toddler'."
+                        "Candidate traveller facts. One-off dates, destination, budget, "
+                        "or requests for this itinerary must use scope=this_trip and are "
+                        "reported but never persisted."
                     ),
                 }
             },
@@ -57,7 +90,7 @@ REMEMBER_TOOL_SCHEMA: dict = {
 
 
 async def remember_preference(
-    preferences: list[str],
+    preferences: list[str | dict],
     *,
     context: dict | None = None,
     store: PreferenceStore | None = None,
@@ -74,21 +107,52 @@ async def remember_preference(
             ok=False, error="preferences must be a list of strings", code=BAD_REQUEST
         )
 
-    wanted = [text for text in preferences if isinstance(text, str)][:MAX_PER_CALL]
+    wanted: list[str] = []
+    keys: list[str | None] = []
+    ignored: list[str] = []
+    for item in preferences[:MAX_PER_CALL]:
+        if isinstance(item, str):
+            # Backward-compatible for old clients and saved scripted runs. New model
+            # calls use structured entries from the schema above.
+            wanted.append(item)
+            keys.append(None)
+            continue
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        text = item["text"]
+        if item.get("scope") != "durable":
+            ignored.append(text)
+            continue
+        key = item.get("key")
+        if not isinstance(key, str) or not _KEY.fullmatch(key):
+            continue
+        wanted.append(text)
+        keys.append(key)
     target = store or default_store
-    stored = await target.remember(user_id, wanted)
+    stored = await target.remember(user_id, wanted, keys=keys)
     already = [text for text in wanted if text not in stored]
 
     logger.info("remembered %s new preference(s) for %s", len(stored), user_id)
-    return RememberOutcome(ok=True, stored=stored, already_known=already)
+    return RememberOutcome(
+        ok=True,
+        stored=stored,
+        already_known=already,
+        ignored_one_off=ignored,
+    )
 
 
-def recall_block(preferences: list[str]) -> str:
+def recall_block(preferences: list[Preference]) -> str:
     """Render known preferences for the system prompt."""
-    lines = "\n".join(f"- {text}" for text in preferences)
+    lines = "\n".join(
+        f"- [key={preference.key}] {preference.text}"
+        if preference.key
+        else f"- [legacy-unkeyed] {preference.text}"
+        for preference in preferences
+    )
     return (
         "You already know this traveller:\n"
         f"{lines}\n"
         "Apply what is relevant to this trip without being asked, and do not ask them to "
-        "repeat it. If something here is contradicted by the new request, the new request wins."
+        "repeat it. If the new request corrects an entry, call remember_preference with "
+        "the same key and the new canonical English text. The new request always wins."
     )

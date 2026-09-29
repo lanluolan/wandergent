@@ -35,6 +35,7 @@ services:
       MEMORY_DB_PATH: /data/wandergent-memory.db
       COMMUNITY_DB_PATH: /data/wandergent-community.db
       AUTH_DB_PATH: /data/wandergent-auth.db
+      FEEDBACK_DB_PATH: /data/wandergent-feedback.db
 
     volumes:
       # The whole reason this project cannot run on a scale-to-zero container platform:

@@ -76,6 +76,9 @@ RESET_CONFIRM_PER_ADDRESS = Limit(count=10, window=900)
 # Saves are idempotent and cheap, so this is only a backstop against a loop.
 SAVE = Limit(count=120, window=3600)
 
+# Feedback is one small local write, but an unbounded loop can still grow the database.
+FEEDBACK = Limit(count=120, window=3600)
+
 ALL_LIMITS = (
     PLAN,
     RESET_PER_ADDRESS,
@@ -85,6 +88,7 @@ ALL_LIMITS = (
     REGISTER_PER_ADDRESS,
     PUBLISH,
     SAVE,
+    FEEDBACK,
 )
 
 

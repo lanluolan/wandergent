@@ -131,4 +131,11 @@ object Network {
         .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(PreferenceApi::class.java)
+
+    val feedbackApi: FeedbackApi = Retrofit.Builder()
+        .baseUrl(ServerConfig.baseUrl)
+        .client(httpClient.newBuilder().callTimeout(20, TimeUnit.SECONDS).build())
+        .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(FeedbackApi::class.java)
 }

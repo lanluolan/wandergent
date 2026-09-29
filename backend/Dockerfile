@@ -53,7 +53,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     # session and shared trip with them, silently.
     MEMORY_DB_PATH=/data/wandergent-memory.db \
     COMMUNITY_DB_PATH=/data/wandergent-community.db \
-    AUTH_DB_PATH=/data/wandergent-auth.db
+    AUTH_DB_PATH=/data/wandergent-auth.db \
+    FEEDBACK_DB_PATH=/data/wandergent-feedback.db
 
 USER wandergent
 EXPOSE 8000

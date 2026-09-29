@@ -21,6 +21,7 @@ from typing import Literal, TypeVar
 from pydantic import BaseModel
 
 from app.agent import opening_hours
+from app.agent.constraints import TripConstraints
 from app.agent.schemas import Activity, DayPlan, Itinerary
 
 # A plan that moves between two places with less than this and no transport activity
@@ -46,6 +47,9 @@ MAX_DAILY_ACTIVE_HOURS = 16
 BUDGET_TOLERANCE = 0.01
 
 ViolationCode = Literal[
+    "constraint_mismatch",
+    "disallowed_transport",
+    "transfer_unverified",
     "over_budget",
     "time_conflict",
     "insufficient_transfer",
@@ -67,7 +71,9 @@ ViolationCode = Literal[
 # These two are judgements about *pace*, which is the traveller's to choose. Someone who
 # says "pack it in" and gets a 13-hour day got what they asked for, and the late jazz set
 # past the cutoff is why they came. Reported, never enforced.
-ADVISORY_CODES: frozenset[str] = frozenset({"overlong_day", "unsociable_hours"})
+ADVISORY_CODES: frozenset[str] = frozenset(
+    {"overlong_day", "unsociable_hours", "transfer_unverified"}
+)
 
 # A band is far too coarse to price an activity -- "MODERATE" means different things in
 # different cities -- so the only inference drawn needs no scale at all: a venue Google
@@ -167,6 +173,7 @@ class Violation(BaseModel):
     #: asks about the hour they will actually travel -- 05:00 gets empty roads and a
     #: skeleton timetable, which is not the trip.
     depart_at_minute: int | None = None
+    travel_mode: str | None = None
 
     @property
     def advisory(self) -> bool:
@@ -292,6 +299,8 @@ def validate_itinerary(
     itinerary: Itinerary,
     known_hours: dict[str, list[str]] | None = None,
     known_prices: dict[str, str] | None = None,
+    *,
+    constraints: TripConstraints | None = None,
 ) -> ValidationReport:
     """Check an itinerary against the hard constraints. Pure and deterministic.
 
@@ -301,7 +310,12 @@ def validate_itinerary(
     """
     violations: list[Violation] = []
 
-    violations.extend(_check_budget(itinerary))
+    if constraints is not None:
+        violations.extend(_check_request_constraints(itinerary, constraints))
+    ceiling = (
+        constraints.budget if constraints and constraints.budget is not None else itinerary.budget
+    )
+    violations.extend(_check_budget(itinerary, ceiling))
     violations.extend(_check_days(itinerary))
     violations.extend(_check_accommodation(itinerary))
     for day in itinerary.days:
@@ -310,6 +324,93 @@ def validate_itinerary(
         violations.extend(_check_price_levels(day, known_prices or {}))
 
     return ValidationReport(violations=violations)
+
+
+def transfer_candidates(plan: Itinerary, report: ValidationReport) -> ValidationReport:
+    """Cover explicit transport and long gaps too, without claiming missing data is proof."""
+    violations = list(report.violations)
+    existing = {
+        (v.day, v.origin, v.destination) for v in violations if v.code == "insufficient_transfer"
+    }
+    for day in plan.days:
+        ordered = sorted(day.activities, key=lambda a: a.start_time)
+        stops = [(i, a) for i, a in enumerate(ordered) if a.category != "transport" and a.location]
+        for (left_index, left), (right_index, right) in zip(stops, stops[1:], strict=False):
+            if left.location == right.location:
+                continue
+            legs = [a for a in ordered[left_index + 1 : right_index] if a.category == "transport"]
+            modes = {transport_mode(a) for a in legs} - {None}
+            mode = next(iter(modes)) if len(modes) == 1 else None
+            key = (day.date, left.location, right.location)
+            if key in existing:
+                continue
+            gap = _minutes(right.start_time) - _minutes(left.end_time)
+            if gap < 0:
+                continue
+            violations.append(
+                Violation(
+                    code="transfer_unverified",
+                    day=day.date,
+                    origin=left.location,
+                    destination=right.location,
+                    gap_minutes=gap,
+                    depart_at_minute=_minutes(left.end_time),
+                    travel_mode=mode,
+                    message=f"Unverified travel time: {left.location} to {right.location}.",
+                )
+            )
+    return ValidationReport(violations=violations)
+
+
+def _check_request_constraints(plan: Itinerary, constraints: TripConstraints) -> list[Violation]:
+    violations = []
+    for field in ("budget", "currency", "start_date", "end_date", "travelers"):
+        expected = getattr(constraints, field)
+        if expected is not None and getattr(plan, field) != expected:
+            violations.append(
+                Violation(
+                    code="constraint_mismatch",
+                    message=f"The request requires {field}={expected}; restore it.",
+                )
+            )
+    if constraints.days is not None and len(plan.days) != constraints.days:
+        violations.append(
+            Violation(
+                code="constraint_mismatch",
+                message=f"The request requires {constraints.days} scheduled days.",
+            )
+        )
+    if constraints.allowed_modes:
+        for day in plan.days:
+            for activity in day.activities:
+                if activity.category != "transport":
+                    continue
+                mode = transport_mode(activity)
+                if mode and mode not in constraints.allowed_modes:
+                    violations.append(
+                        Violation(
+                            code="disallowed_transport",
+                            day=day.date,
+                            message=(
+                                f"{activity.title} uses {mode}; "
+                                f"allowed: {constraints.allowed_modes}."
+                            ),
+                        )
+                    )
+    return violations
+
+
+def transport_mode(activity: Activity) -> str | None:
+    if activity.travel_mode:
+        return activity.travel_mode
+    text = activity.title.casefold()
+    if re.search(r"\b(walk|walking)\b|步行", text):
+        return "WALK"
+    if re.search(r"\b(transit|bus|subway|metro|train|tram)\b|公交|地铁", text):
+        return "TRANSIT"
+    if re.search(r"\b(drive|driving|taxi|uber|lyft|car|rideshare)\b|开车|打车", text):
+        return "DRIVE"
+    return None
 
 
 # Written with a TypeVar rather than PEP 695 syntax: the project supports 3.11, where
@@ -439,10 +540,10 @@ def _check_accommodation(itinerary: Itinerary) -> list[Violation]:
     ]
 
 
-def _check_budget(itinerary: Itinerary) -> list[Violation]:
-    if itinerary.budget is None:
+def _check_budget(itinerary: Itinerary, ceiling: float | None = None) -> list[Violation]:
+    if ceiling is None:
         return []
-    overspend = itinerary.total_estimated_cost - itinerary.budget
+    overspend = itinerary.total_estimated_cost - ceiling
     if overspend <= BUDGET_TOLERANCE:
         return []
     return [
@@ -450,7 +551,7 @@ def _check_budget(itinerary: Itinerary) -> list[Violation]:
             code="over_budget",
             message=(
                 f"The plan costs {itinerary.total_estimated_cost:.0f} {itinerary.currency} "
-                f"but the budget is {itinerary.budget:.0f} {itinerary.currency}, "
+                f"but the budget is {ceiling:.0f} {itinerary.currency}, "
                 f"over by {overspend:.0f}. Cut or cheapen activities until it fits."
             ),
         )

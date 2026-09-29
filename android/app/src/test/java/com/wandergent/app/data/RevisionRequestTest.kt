@@ -47,8 +47,22 @@ class RevisionRequestTest {
 
     @Test
     fun `a follow-up carries the whole plan being edited`() {
+        val constraints = TripConstraints(
+            budget = 500.0,
+            currency = "USD",
+            startDate = "2026-09-01",
+            endDate = "2026-09-01",
+            days = 1,
+            travelers = 2,
+            allowedModes = listOf("WALK", "TRANSIT"),
+        )
         val encoded = ApiJson.json.encodeToString(
-            PlanRequest(message = "swap lunch for a taco place", currency = "USD", previous = itinerary),
+            PlanRequest(
+                message = "swap lunch for a taco place",
+                currency = "USD",
+                previous = itinerary,
+                previousConstraints = constraints,
+            ),
         )
 
         assertTrue(encoded.contains(""""message":"swap lunch for a taco place""""), encoded)
@@ -58,6 +72,8 @@ class RevisionRequestTest {
         assertTrue(encoded.contains("2800 E Observatory Rd"), encoded)
         // The budget rides along, so the revision is still checked against it.
         assertTrue(encoded.contains(""""budget":500.0"""), encoded)
+        assertTrue(encoded.contains(""""previous_constraints":{"budget":500.0"""), encoded)
+        assertTrue(encoded.contains(""""allowed_modes":["WALK","TRANSIT"]"""), encoded)
     }
 
     @Test

@@ -87,8 +87,15 @@ async def test_violations_are_fed_back_and_the_repair_is_re_validated() -> None:
 
 
 async def test_a_failed_repair_ships_the_plan_with_honest_warnings() -> None:
-    """Two strikes and it stops. The plan goes out, but not as if it were sound."""
-    llm = FakeLLM([completion(content=OVER_BUDGET), completion(content=OVER_BUDGET)])
+    """The bounded retries stop. The plan goes out, but not as if it were sound."""
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content=OVER_BUDGET),
+            completion(content=OVER_BUDGET),
+            completion(content=OVER_BUDGET),
+        ]
+    )
 
     events = await collect(llm)
     result = events[-1].result
@@ -101,8 +108,29 @@ async def test_a_failed_repair_ships_the_plan_with_honest_warnings() -> None:
     # The unresolved finding rides in the report and nowhere else. `warnings` is about
     # what the *run* could not finish, and this run finished everything it attempted.
     assert result.warnings == []
-    # Exactly one repair attempt, so a stubborn model cannot loop forever.
-    assert len(llm.requests) == 2
+    # Exactly three repair attempts, so a stubborn model cannot loop forever.
+    assert len(llm.requests) == 4
+
+
+async def test_a_second_repair_can_finish_an_imperfect_first_repair() -> None:
+    still_over = itinerary_json(cost=1200)
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content=still_over),
+            completion(content=WITHIN_BUDGET),
+        ]
+    )
+
+    events = await collect(llm)
+
+    validations = [event for event in events if event.type == "validation"]
+    assert [report.violations[0].code for report in validations[:2]] == [
+        "over_budget",
+        "over_budget",
+    ]
+    assert validations[-1].violations == []
+    assert events[-1].result.validation.ok
 
 
 async def test_a_malformed_repair_keeps_the_original_plan() -> None:

@@ -430,7 +430,7 @@ async def test_the_transfer_minimum_the_model_is_told_is_the_one_it_is_judged_ag
     from tests.fakes import ITINERARY_JSON, FakeLLM, completion
 
     llm = FakeLLM([completion(content=ITINERARY_JSON)])
-    await plan_trip("3 days in Chicago", client=llm, model="test-model")
+    await plan_trip("2 days in Chicago", client=llm, model="test-model")
 
     prompt = llm.requests[0]["messages"][0]["content"]
     assert f"at least {MIN_TRANSFER_MINUTES} minutes" in prompt

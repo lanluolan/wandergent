@@ -2070,3 +2070,62 @@ nothing read them, and Phase 4 will add what it actually needs.
   and tiles fetched by the phone. Server-fetched static maps still succeed. No evidence links
   this failure to the quarterly Maps channel or a WebView downgrade; the external browser's
   Chrome 62 user agent describes a different engine. No device network settings were changed.
+
+## Correctness gate, request-owned constraints and feedback data (2026-09-29)
+
+- `TripConstraints` is the authority for budget, currency, dates, duration, party size and
+  allowed travel modes. The generated itinerary is only a proposal. Explicit prose uses a
+  narrow deterministic parser; trusted clients can supply structured confirmation. Revisions
+  carry the prior snapshot, while `New trip` clears it. Contradictory dates and duration fail
+  at the request boundary.
+- `emit` now stores its successful assistant turn before validation, so constraint repair sees
+  the exact plan it must edit. Every repair re-runs the whole validator. Live eval showed that
+  one and two passes could fix one defect while creating a new zero-gap hop; three is the bounded
+  cap, and the prompt requires a final whole-plan scan. Remaining findings still ship honestly.
+- Route validation no longer chooses the fastest of WALK, TRANSIT and DRIVE. It measures the
+  declared leg mode, or walking when none is declared, and rejects modes outside the request.
+  Every real-stop hop becomes a bounded measurement candidate; an unavailable route remains
+  `transfer_unverified` rather than being silently cleared.
+- Signed-in runs retain an allowlisted structural feedback snapshot for 30 days, capped at 100
+  per account. No request, destination, venue, address, coordinate, tool argument, upstream
+  error or model prose is stored. Whole-plan and activity feedback are owner-scoped. Exports are
+  unreviewed labels: reproduce first, then add a test or eval case; user feedback never edits the
+  release gate directly.
+- The eval owns an isolated memory database, counts setup and every revision, fixes the reference
+  date, records source/suite hashes, saves after each case and can resume only an identical partial
+  run. A mid-stream `httpx` read failure exposed a raw exception path; all LLM connect/read errors
+  now cross the same stable `PlanningError` boundary without upstream text.
+- Same 9 case ids and 75 pass decisions, `gpt-5.6-luna`, Maps enabled: frozen pre-change app
+  **4/9 cases, 68/75 checks, 61 calls, 547,012 tokens, 830.9 s, $0.159989**; final app
+  **7/9, 72/75, 73 calls, 767,725 tokens, 986.9 s, $0.210615**. The price uses operator-supplied
+  base text rates and excludes Maps and long-context multipliers. Suite byte hashes differ because
+  failure rendering was changed to omit advisory noise; case ids, check count and pass semantics
+  did not change.
+- The final gate remains red by design. `beyond-forecast-horizon` kept three breakfasts outside
+  known hours after all repairs. `revision-sequence` began with a measured zero-gap transfer and
+  its first targeted edit changed an untouched day. These are the next correctness/context cases,
+  not reasons to weaken validators or select a luckier rerun.
+
+## Deterministic revision scope and keyed durable memory (2026-09-29)
+
+- A revision is an edit proposal, not authority over the whole prior plan. Explicit `day N` clauses
+  produce a server-owned scope; locked days and unmentioned frame fields are restored after parsing,
+  format repair and constraint repair. Prompt-only locking failed in the full eval because the model
+  changed day 2 while editing day 1.
+- Locked days are compact model context: list position, date and cost remain visible, while activities
+  stay server-side. Unscoped edits keep the full plan because dropping details whose relevance is not
+  known would make preservation unverifiable. A 30-day regression pins the scoped compression.
+- Context priority is system/hard constraints, current request, current-run tool facts, editable prior
+  plan, then durable memory. There is no replayed conversation history or checkpoint. Verified place
+  briefs now carry identity, address, coordinates, price, hours, source and collection time.
+- Durable memory uses `{key, text, scope}`. `this_trip` is never stored. A language-independent key
+  identifies one semantic slot, so a correction replaces the old value and translated input can reuse
+  the same slot. Recall includes keys so the model can perform that update. The SQLite migration adds a
+  nullable column and partial unique index without rewriting existing rows or changing the HTTP API.
+- Targeted live `revision-sequence` reached 28/29 checks in 283.5 s with 24 calls and 197,542 tokens
+  ($0.048731 estimated). Unauthorized day drift is gone. The remaining measured zero-gap transfer is
+  intentionally left under the earlier correctness item; no smoke or full rerun followed a red target.
+- Targeted `memory-recall` proved the real model accepts `{key, text, scope}` and carries the learned
+  exclusions/interests into the next trip: all three memory/plan-content checks passed. The case was
+  3/4 because unrelated transfer and opening-hours validation remained red. It used 11 calls, 130,240
+  tokens, 161.3 s and an estimated $0.036439. A red relevant target stopped the ladder; it was not rerun.

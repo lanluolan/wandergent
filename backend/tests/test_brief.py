@@ -70,6 +70,22 @@ def test_the_brief_carries_the_distances_too() -> None:
     assert "too far to walk" in block
 
 
+def test_the_brief_preserves_identity_location_source_and_freshness() -> None:
+    block = render(
+        {"Art Institute": ART_INSTITUTE},
+        {},
+        {},
+        {"Art Institute": "111 S Michigan Ave, Chicago, IL"},
+        collected_at="2026-09-29T12:00:00+00:00",
+    )
+
+    assert block is not None
+    assert "address 111 S Michigan Ave" in block
+    assert "coordinates 41.87960,-87.62240" in block
+    assert "source=Google Places" in block
+    assert "collected_at=2026-09-29T12:00:00+00:00" in block
+
+
 def test_a_venue_known_only_by_its_hours_still_appears() -> None:
     """The three harvests are independent -- a place can arrive with hours and no
     coordinates. Listing only the ones with points would silently lose it."""

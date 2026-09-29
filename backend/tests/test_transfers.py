@@ -79,20 +79,20 @@ async def test_a_genuinely_long_hop_stays_flagged_with_the_real_number(monkeypat
 
     violation = report.violations[0]
     assert violation.code == "insufficient_transfer"
-    # Driving is 25 minutes, so that is the number the repair instruction must carry.
-    assert violation.needed_minutes == 25 + TRANSFER_MARGIN_MINUTES
-    assert "25 minutes" in violation.message
+    # An unspecified leg cannot silently assume driving.
+    assert violation.needed_minutes == 60 + TRANSFER_MARGIN_MINUTES
+    assert "60 minutes" in violation.message
     assert "10" in violation.message
 
 
-async def test_driving_rescues_a_hop_that_is_only_a_long_walk(monkeypatch) -> None:
+async def test_driving_does_not_rescue_an_unspecified_walk(monkeypatch) -> None:
     """A long walk with a short taxi ride is a schedule with a taxi in it, not an
     infeasible one."""
     monkeypatch.setattr(transfers, "get_travel_time", fake_travel({"WALK": 5400, "DRIVE": 300}))
 
     report = await confirm_transfers(ValidationReport(violations=[transfer_violation(gap=15)]))
 
-    assert report.ok
+    assert not report.ok
 
 
 async def test_an_unmeasurable_pair_keeps_the_heuristics_word(monkeypatch) -> None:
@@ -172,17 +172,19 @@ async def test_transit_is_preferred_when_it_exists(monkeypatch) -> None:
     monkeypatch.setattr("app.agent.transfers.get_travel_time", fake)
     monkeypatch.setattr(settings, "google_maps_api_key", "test-key")
 
-    report = ValidationReport(violations=[transfer_violation(gap=30)])
+    report = ValidationReport(
+        violations=[transfer_violation(gap=30).model_copy(update={"travel_mode": "TRANSIT"})]
+    )
     confirmed = await confirm_transfers(report)
 
-    assert set(asked) == {"TRANSIT", "WALK", "DRIVE"}
+    assert set(asked) == {"TRANSIT"}
     # 20 + 5 margin <= 30 available, so the violation clears. On the walk alone it would
     # have survived and sent the agent off to repair a schedule that was already fine.
     assert confirmed.ok
 
 
 async def test_a_region_without_transit_falls_back(monkeypatch) -> None:
-    """Japan returns no transit route. That must degrade, not disable the check."""
+    """A missing route must never authorize a different mode."""
 
     async def fake(origin, destination, mode="WALK", **kwargs):
         if mode == "TRANSIT":
@@ -199,9 +201,9 @@ async def test_a_region_without_transit_falls_back(monkeypatch) -> None:
 
     confirmed = await confirm_transfers(ValidationReport(violations=[transfer_violation(gap=10)]))
 
-    # Falls back to the shorter of walk/drive -- 40 min -- and the violation survives.
+    # An unspecified mode uses walking, never an invented taxi ride.
     assert not confirmed.ok
-    assert "40 minutes by drive" in confirmed.violations[0].message
+    assert "90 minutes by walk" in confirmed.violations[0].message
 
 
 async def test_the_message_names_the_mode_it_measured(monkeypatch) -> None:
@@ -220,7 +222,8 @@ async def test_the_message_names_the_mode_it_measured(monkeypatch) -> None:
     monkeypatch.setattr("app.agent.transfers.get_travel_time", fake)
     monkeypatch.setattr(settings, "google_maps_api_key", "test-key")
 
-    confirmed = await confirm_transfers(ValidationReport(violations=[transfer_violation(gap=5)]))
+    violation = transfer_violation(gap=5).model_copy(update={"travel_mode": "TRANSIT"})
+    confirmed = await confirm_transfers(ValidationReport(violations=[violation]))
 
     assert "by transit" in confirmed.violations[0].message
     assert confirmed.violations[0].needed_minutes == 30
@@ -279,8 +282,8 @@ async def test_the_measurement_is_asked_for_the_hour_on_the_plan(monkeypatch) ->
     assert all((moment + CHICAGO).hour == 17 for moment in asked)  # type: ignore[operator]
 
 
-async def test_an_unresolvable_timezone_still_measures(monkeypatch) -> None:
-    """No offset is a reason to fall back, never a reason to stop measuring."""
+async def test_an_unresolvable_timezone_preserves_the_finding(monkeypatch) -> None:
+    """A generic reference hour cannot disprove a time-sensitive finding."""
 
     async def _no_offset(place: str, on=None, **_):
         return None
@@ -290,4 +293,29 @@ async def test_an_unresolvable_timezone_still_measures(monkeypatch) -> None:
 
     report = await confirm_transfers(ValidationReport(violations=[transfer_violation(10)]))
 
-    assert report.ok  # cleared by the 3-minute walk, exactly as with an offset
+    assert not report.ok
+
+
+async def test_disallowed_drive_cannot_clear_a_walk(monkeypatch) -> None:
+    monkeypatch.setattr(transfers, "get_travel_time", fake_travel({"WALK": 3600, "DRIVE": 60}))
+    result = await confirm_transfers(
+        ValidationReport(violations=[transfer_violation(10)]), allowed_modes=["WALK"]
+    )
+    assert not result.ok and result.violations[0].needed_minutes == 65
+
+
+async def test_missing_transit_does_not_fall_back_to_driving(monkeypatch) -> None:
+    monkeypatch.setattr(transfers, "get_travel_time", fake_travel({"TRANSIT": None, "DRIVE": 60}))
+    violation = transfer_violation(10).model_copy(update={"travel_mode": "TRANSIT"})
+    result = await confirm_transfers(ValidationReport(violations=[violation]))
+    assert result.violations == [violation]
+
+
+async def test_explicit_short_leg_is_measured_and_flagged(monkeypatch) -> None:
+    monkeypatch.setattr(transfers, "get_travel_time", fake_travel({"TRANSIT": 1201}))
+    violation = transfer_violation(20).model_copy(
+        update={"code": "transfer_unverified", "travel_mode": "TRANSIT"}
+    )
+    result = await confirm_transfers(ValidationReport(violations=[violation]))
+    assert result.violations[0].code == "insufficient_transfer"
+    assert result.violations[0].needed_minutes == 26

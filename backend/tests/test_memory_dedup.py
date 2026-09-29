@@ -73,6 +73,35 @@ async def test_a_contradicting_update_is_kept(store: PreferenceStore) -> None:
     assert {p.text for p in await store.recall("u1")} == {"avoids hiking", "loves hiking"}
 
 
+async def test_same_semantic_key_overrides_instead_of_leaving_a_contradiction(
+    store: PreferenceStore,
+) -> None:
+    await store.remember("u1", ["avoids hiking"], keys=["activity:hiking"])
+    changed = await store.remember("u1", ["enjoys hiking"], keys=["activity:hiking"])
+
+    recalled = await store.recall("u1")
+    assert changed == ["enjoys hiking"]
+    assert [(preference.key, preference.text) for preference in recalled] == [
+        ("activity:hiking", "enjoys hiking")
+    ]
+
+
+async def test_language_independent_key_deduplicates_translated_input(
+    store: PreferenceStore,
+) -> None:
+    await store.remember("u1", ["avoids hiking"], keys=["avoid:hiking"])
+    changed = await store.remember(
+        "u1",
+        ["avoids hiking on trips"],
+        keys=["avoid:hiking"],
+    )
+
+    recalled = await store.recall("u1")
+    assert changed == ["avoids hiking on trips"]
+    assert len(recalled) == 1
+    assert recalled[0].key == "avoid:hiking"
+
+
 async def test_storage_is_capped_and_drops_the_oldest(store: PreferenceStore) -> None:
     """Recall was already capped; without this the table grew for the life of an account."""
     for index in range(MAX_PREFERENCES_STORED + 5):

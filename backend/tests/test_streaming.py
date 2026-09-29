@@ -157,6 +157,39 @@ async def test_upstream_failure_raises_rather_than_yielding(stub_weather) -> Non
         await collect(llm)
 
 
+async def test_midstream_read_failure_is_safe_and_mapped() -> None:
+    """The SDK can connect successfully and still expose a raw httpx error while the
+    SSE body is being read. It must use the same stable boundary as connect errors."""
+    from types import SimpleNamespace
+
+    import httpx
+
+    from app.agent.llm import PlanningError, Turn, stream_turn
+    from tests.fakes import completion
+
+    chunks = completion(content="partial private model output")
+
+    class BrokenStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if chunks:
+                return chunks.pop(0)
+            raise httpx.ReadError("private upstream URL and response")
+
+    class Completions:
+        async def create(self, **kwargs):
+            return BrokenStream()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    turn = Turn()
+
+    with pytest.raises(PlanningError, match="^the language model is unavailable$") as raised:
+        _ = [event async for event in stream_turn(client, "test-model", turn, messages=[])]
+    assert "private" not in str(raised.value)
+
+
 # --- SSE endpoint -----------------------------------------------------------------
 
 

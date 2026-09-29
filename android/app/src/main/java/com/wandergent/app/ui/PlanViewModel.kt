@@ -232,13 +232,19 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private fun stateOf(id: Long): TurnState? =
         _transcript.value.firstOrNull { it.id == id }?.state
 
+    private fun constraintsBefore(id: Long, previous: Itinerary?) =
+        if (previous == null) null else _transcript.value.asSequence()
+            .filter { it.id < id }
+            .mapNotNull { (it.state as? TurnState.Loaded)?.response }
+            .lastOrNull { it.itinerary != null }?.constraints
+
     private fun run(id: Long, request: String, previous: Itinerary? = null) {
         viewModelScope.launch {
             var progress = LiveProgress()
             var events = 0
 
             try {
-                repository.stream(request, currency, previous).collect { event ->
+                repository.stream(request, currency, previous, constraintsBefore(id, previous)).collect { event ->
                     events++
                     progress = reduceProgress(progress, event)
                     when (event.type) {
@@ -279,7 +285,7 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
         setState(id, TurnState.Running(LiveProgress(stage = "$reason -- retrying without streaming")))
         // Carries `previous` too: a degraded transport must not silently turn an edit
         // into a from-scratch replan.
-        when (val outcome = repository.plan(message, currency, previous)) {
+        when (val outcome = repository.plan(message, currency, previous, constraintsBefore(id, previous))) {
             is PlanOutcome.Success -> {
                 setState(id, TurnState.Loaded(outcome.response))
                 remember(id, outcome.response)

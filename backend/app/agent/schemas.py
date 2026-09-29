@@ -11,7 +11,7 @@ activities, so it cannot claim a plan fits the budget by mis-adding.
 import json
 import re
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
@@ -46,6 +46,9 @@ class Activity(BaseModel):
         description=f"One of: {', '.join(ACTIVITY_CATEGORIES)}.",
     )
     location: str | None = Field(default=None, description="Place name or address.")
+    travel_mode: Literal["WALK", "TRANSIT", "DRIVE"] | None = Field(
+        default=None, description="For transport activities, the actual mode of this leg."
+    )
     indoor: bool | None = Field(
         default=None,
         description="True if the activity is indoors. Used to reshuffle plans around rain.",

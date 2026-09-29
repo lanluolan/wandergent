@@ -93,21 +93,26 @@ def feasible() -> Check:
         if report is None:
             return "no validation report"
         if not report.ok:
-            return " | ".join(describe(violation) for violation in report.violations)
+            return " | ".join(describe(violation) for violation in report.blocking)
         return None
 
     return Check("passes hard constraints", check)
 
 
-def within_budget() -> Check:
+def within_budget(limit: float | None = None, currency: str | None = None) -> Check:
     def check(result: PlanResult) -> str | None:
         itinerary = result.itinerary
         if itinerary is None:
             return "no itinerary"
         if itinerary.budget is None:
             return "the plan dropped the stated budget"
-        if itinerary.total_estimated_cost > itinerary.budget:
-            return f"{itinerary.total_estimated_cost:.0f} > {itinerary.budget:.0f}"
+        ceiling = itinerary.budget if limit is None else limit
+        if currency and itinerary.currency != currency:
+            return f"currency {itinerary.currency}, expected {currency}"
+        if limit is not None and itinerary.budget != limit:
+            return f"budget changed from {limit} to {itinerary.budget}"
+        if itinerary.total_estimated_cost > ceiling:
+            return f"{itinerary.total_estimated_cost:.0f} > {ceiling:.0f}"
         return None
 
     return Check("within budget", check)
@@ -123,6 +128,68 @@ def days(expected: int) -> Check:
         return None
 
     return Check(f"{expected} days", check)
+
+
+def honest_budget_failure(limit: float) -> Check:
+    def check(result: PlanResult) -> str | None:
+        if result.itinerary is None:
+            return "no itinerary"
+        if result.itinerary.budget != limit:
+            return "the requested budget was changed"
+        if result.itinerary.total_estimated_cost <= limit:
+            return None
+        if result.validation and any(v.code == "over_budget" for v in result.validation.blocking):
+            return None
+        return "an over-budget plan was presented without an over_budget finding"
+
+    return Check("honest infeasibility", check)
+
+
+def date_range(start: str, end: str) -> Check:
+    def check(result: PlanResult) -> str | None:
+        plan = result.itinerary
+        if plan and str(plan.start_date) == start and str(plan.end_date) == end:
+            return None
+        return f"expected dates {start} through {end}"
+
+    return Check("requested dates", check)
+
+
+def destination_is(name: str) -> Check:
+    return Check(
+        "requested destination",
+        lambda r: (
+            None
+            if r.itinerary and name.casefold() in r.itinerary.destination.casefold()
+            else f"expected {name}"
+        ),
+    )
+
+
+def unchanged_day(index: int) -> RevisionCheck:
+    def check(before: PlanResult, revised: PlanResult) -> str | None:
+        if not before.itinerary or not revised.itinerary:
+            return "missing itinerary"
+        if min(len(before.itinerary.days), len(revised.itinerary.days)) <= index:
+            return "missing day"
+        if before.itinerary.days[index].activities != revised.itinerary.days[index].activities:
+            return f"day {index + 1} changed without authorization"
+        return None
+
+    return RevisionCheck(f"day {index + 1} unchanged", check)
+
+
+def changed_day(index: int) -> RevisionCheck:
+    same = unchanged_day(index)
+
+    def check(before: PlanResult, revised: PlanResult) -> str | None:
+        if not before.itinerary or not revised.itinerary:
+            return "missing itinerary"
+        if min(len(before.itinerary.days), len(revised.itinerary.days)) <= index:
+            return "missing day"
+        return "requested day was not changed" if same(before, revised) is None else None
+
+    return RevisionCheck(f"day {index + 1} changed", check)
 
 
 def used_tool(name: str) -> Check:

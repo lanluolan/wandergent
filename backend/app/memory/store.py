@@ -74,6 +74,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS preferences (
     user_id    TEXT NOT NULL,
     text       TEXT NOT NULL,
+    preference_key TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (user_id, text)
 )
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS preferences (
 class Preference:
     text: str
     created_at: datetime
+    key: str | None = None
 
 
 class PreferenceStore:
@@ -109,6 +111,16 @@ class PreferenceStore:
             def create() -> None:
                 with self._connect() as connection:
                     connection.execute(_SCHEMA)
+                    columns = {
+                        row[1] for row in connection.execute("PRAGMA table_info(preferences)")
+                    }
+                    if "preference_key" not in columns:
+                        connection.execute("ALTER TABLE preferences ADD COLUMN preference_key TEXT")
+                    connection.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS preferences_user_key "
+                        "ON preferences(user_id, preference_key) "
+                        "WHERE preference_key IS NOT NULL"
+                    )
 
             await asyncio.to_thread(create)
             self._ready = True
@@ -119,10 +131,10 @@ class PreferenceStore:
             return []
         await self._ensure_schema()
 
-        def query() -> list[tuple[str, str]]:
+        def query() -> list[tuple[str, str, str | None]]:
             with self._connect() as connection:
                 rows = connection.execute(
-                    "SELECT text, created_at FROM preferences WHERE user_id = ?"
+                    "SELECT text, created_at, preference_key FROM preferences WHERE user_id = ?"
                     " ORDER BY created_at DESC LIMIT ?",
                     (user_id, limit),
                 ).fetchall()
@@ -130,11 +142,17 @@ class PreferenceStore:
 
         rows = await asyncio.to_thread(query)
         return [
-            Preference(text=text, created_at=datetime.fromisoformat(created_at))
-            for text, created_at in rows
+            Preference(text=text, created_at=datetime.fromisoformat(created_at), key=key)
+            for text, created_at, key in rows
         ]
 
-    async def remember(self, user_id: str, texts: list[str]) -> list[str]:
+    async def remember(
+        self,
+        user_id: str,
+        texts: list[str],
+        *,
+        keys: list[str | None] | None = None,
+    ) -> list[str]:
         """Store preferences, returning the ones that were actually new.
 
         Silently drops blanks and over-long entries rather than failing the call: this
@@ -145,11 +163,13 @@ class PreferenceStore:
             return []
         await self._ensure_schema()
 
-        cleaned = []
-        for text in texts:
+        supplied_keys = keys or [None] * len(texts)
+        cleaned: list[tuple[str, str | None]] = []
+        for index, text in enumerate(texts):
             trimmed = " ".join(text.split())[:MAX_PREFERENCE_CHARS].strip()
             if trimmed:
-                cleaned.append(trimmed)
+                key = supplied_keys[index] if index < len(supplied_keys) else None
+                cleaned.append((trimmed, key))
         if not cleaned:
             return []
 
@@ -158,22 +178,59 @@ class PreferenceStore:
         def insert() -> list[str]:
             stored: list[str] = []
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 known = [
                     row[0]
                     for row in connection.execute(
                         "SELECT text FROM preferences WHERE user_id = ?", (user_id,)
                     )
                 ]
-                for text in cleaned:
+                for text, key in cleaned:
+                    if key:
+                        existing = connection.execute(
+                            "SELECT text FROM preferences WHERE user_id = ? AND preference_key = ?",
+                            (user_id, key),
+                        ).fetchone()
+                        if existing:
+                            if existing[0] == text:
+                                continue
+                            # One semantic slot has one current value. This is the
+                            # correction/override path; the old value does not remain in
+                            # recall to contradict the new one.
+                            connection.execute(
+                                "DELETE FROM preferences "
+                                "WHERE user_id = ? AND (preference_key = ? OR text = ?)",
+                                (user_id, key, text),
+                            )
+                            connection.execute(
+                                "INSERT INTO preferences "
+                                "(user_id, text, preference_key, created_at) VALUES (?, ?, ?, ?)",
+                                (user_id, text, key, now),
+                            )
+                            stored.append(text)
+                            known = [
+                                known_text for known_text in known if known_text != existing[0]
+                            ]
+                            known.append(text)
+                            continue
+                        if text in known:
+                            # Adopt a key for an exact legacy row without creating a
+                            # duplicate or pretending a user-visible preference changed.
+                            connection.execute(
+                                "UPDATE preferences SET preference_key = ? "
+                                "WHERE user_id = ? AND text = ? AND preference_key IS NULL",
+                                (key, user_id, text),
+                            )
+                            continue
                     # Checked against what this batch has already added too, so a model
                     # that says the same thing twice in one call is caught as well.
                     if is_restatement(text, known):
                         logger.info("preference %r already known for %s; skipped", text, user_id)
                         continue
                     cursor = connection.execute(
-                        "INSERT OR IGNORE INTO preferences (user_id, text, created_at)"
-                        " VALUES (?, ?, ?)",
-                        (user_id, text, now),
+                        "INSERT OR IGNORE INTO preferences "
+                        "(user_id, text, preference_key, created_at) VALUES (?, ?, ?, ?)",
+                        (user_id, text, key, now),
                     )
                     if cursor.rowcount:
                         stored.append(text)

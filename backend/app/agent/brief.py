@@ -71,9 +71,13 @@ def render(
     points: dict[str, tuple[float, float]],
     hours: dict[str, list[str]],
     prices: dict[str, str],
+    addresses: dict[str, str] | None = None,
+    *,
+    collected_at: str | None = None,
 ) -> str | None:
     """The whole brief, or None when the run has not looked anything up yet."""
-    names = list(dict.fromkeys([*points, *hours, *prices]))
+    addresses = addresses or {}
+    names = list(dict.fromkeys([*points, *hours, *prices, *addresses]))
     shown, dropped = names[:MAX_VENUES], len(names) - len(names[:MAX_VENUES])
     if not shown:
         return None
@@ -84,12 +88,22 @@ def render(
     ]
     for name in shown:
         facts = []
+        if addresses.get(name):
+            facts.append(f"address {addresses[name]}")
+        if name in points:
+            latitude, longitude = points[name]
+            facts.append(f"coordinates {latitude:.5f},{longitude:.5f}")
         summary = summarize_hours(hours.get(name) or [])
         facts.append(summary if summary else "hours not published")
         band = PRICE_WORDS.get(prices.get(name, ""))
         if band:
             facts.append(band)
         lines.append(f"- {name}: {' | '.join(facts)}")
+
+    freshness = "source=Google Places"
+    if collected_at:
+        freshness += f" | collected_at={collected_at}"
+    lines.append(f"Fact provenance: {freshness}. Refresh on a new planning run.")
 
     distances = proximity.render({name: points[name] for name in shown if name in points})
     if distances:

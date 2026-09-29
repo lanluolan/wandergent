@@ -22,6 +22,10 @@ class PlanDtoTest {
     fun `parses a real backend response`() {
         val response = json.decodeFromString<PlanResponse>(REAL_RESPONSE)
 
+        assertEquals("a".repeat(32), response.runId)
+        assertTrue(response.feedbackAvailable)
+        assertEquals(900.0, response.constraints?.budget)
+        assertEquals(listOf("WALK", "TRANSIT"), response.constraints?.allowedModes)
         val itinerary = requireNotNull(response.itinerary)
         assertEquals("Los Angeles", itinerary.destination)
         assertEquals("2026-09-14", itinerary.startDate)
@@ -35,6 +39,7 @@ class PlanDtoTest {
         assertEquals("09:00", first.startTime)
         assertEquals("Santa Monica Pier", first.title)
         assertEquals(false, first.indoor)
+        assertNull(first.travelMode)
         assertNull(first.notes)
 
         assertEquals(listOf("Book the Getty parking slot ahead; the museum itself is free."), itinerary.notes)
@@ -176,6 +181,17 @@ class PlanDtoTest {
 
 private const val REAL_RESPONSE = """
 {
+  "run_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "feedback_available": true,
+  "constraints": {
+    "budget": 900.0,
+    "currency": "USD",
+    "start_date": "2026-09-14",
+    "end_date": "2026-09-15",
+    "days": 2,
+    "travelers": 2,
+    "allowed_modes": ["WALK", "TRANSIT"]
+  },
   "itinerary": {
     "destination": "Los Angeles",
     "start_date": "2026-09-14",
@@ -195,6 +211,7 @@ private const val REAL_RESPONSE = """
             "title": "Santa Monica Pier",
             "category": "sightseeing",
             "location": "200 Santa Monica Pier, Santa Monica, CA 90401",
+            "travel_mode": null,
             "indoor": false,
             "estimated_cost": 0.0,
             "highlights": [],
@@ -206,6 +223,7 @@ private const val REAL_RESPONSE = """
             "title": "Lunch at Grand Central Market",
             "category": "food",
             "location": null,
+            "travel_mode": null,
             "indoor": true,
             "estimated_cost": 45.0,
             "highlights": [
@@ -220,6 +238,7 @@ private const val REAL_RESPONSE = """
             "title": "Check in at Hotel Figueroa",
             "category": "accommodation",
             "location": "939 S Figueroa St, Los Angeles, CA 90015",
+            "travel_mode": null,
             "indoor": true,
             "estimated_cost": 0.0,
             "highlights": [],
@@ -239,6 +258,7 @@ private const val REAL_RESPONSE = """
             "title": "The Getty Center",
             "category": "sightseeing",
             "location": null,
+            "travel_mode": null,
             "indoor": null,
             "estimated_cost": 20.0,
             "highlights": [],

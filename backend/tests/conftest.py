@@ -40,6 +40,7 @@ def _pinned_llm_settings(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-a-real-key")
     monkeypatch.setattr(settings, "openai_base_url", "https://api.example.test/v1")
     monkeypatch.setattr(settings, "openai_model", "test-model")
+    monkeypatch.setattr(settings, "google_maps_api_key", "")
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,7 @@ def _isolated_databases(tmp_path, monkeypatch):
     from app.agent import orchestrator
     from app.auth.store import AuthStore
     from app.community.store import CommunityStore
+    from app.feedback import FeedbackStore
     from app.memory.store import PreferenceStore
     from app.tools import memory as memory_tool
 
@@ -74,3 +76,4 @@ def _isolated_databases(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "memory_store", preferences)
     monkeypatch.setattr(orchestrator, "memory_store", preferences)
     monkeypatch.setattr(memory_tool, "default_store", preferences)
+    monkeypatch.setattr(main, "feedback_store", FeedbackStore(tmp_path / "feedback.db"))

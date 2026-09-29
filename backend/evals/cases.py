@@ -25,15 +25,20 @@ from evals.checks import (
     after,
     at_most_llm_calls,
     avoids,
+    changed_day,
+    date_range,
     days,
+    destination_is,
     feasible,
     has_accommodation,
     highlights_on,
+    honest_budget_failure,
     kept_most_activities,
     mentions_any,
     now_schedules,
     produced_a_plan,
     trip_frame_unchanged,
+    unchanged_day,
     used_tool,
     within_budget,
 )
@@ -46,6 +51,14 @@ from evals.checks import (
 # worse than one that misses some -- it sends the next person chasing a bug that is not
 # there.
 HIKING = ("hiking", "hike", "trekking", "trek", "mountain climb", "rock climb", "summit trail")
+
+
+@dataclass(frozen=True)
+class Step:
+    request: str
+    checks: tuple[Check, ...]
+    revision_checks: tuple[RevisionCheck, ...] = ()
+    new_trip: bool = False
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,7 @@ class Case:
     #: what I asked" from "regenerated the trip and happened to include ramen".
     revise_request: str | None = None
     revision_checks: list[RevisionCheck] = field(default_factory=list)
+    steps: tuple[Step, ...] = ()
 
 
 CASES: list[Case] = [
@@ -78,7 +92,7 @@ CASES: list[Case] = [
         checks=[
             produced_a_plan(),
             feasible(),
-            within_budget(),
+            within_budget(900, "USD"),
             days(3),
             used_tool("get_weather_forecast"),
             # Was 4, from before the maps tools existed. Two runs since then measured
@@ -92,12 +106,14 @@ CASES: list[Case] = [
         # From a real complaint about a live plan: three days with no hotel at all, a
         # breakfast entry reading "the hotel or a nearby cafe", and not one dish named
         # despite the traveller saying they came for the food.
-        request="3 days in Bangkok, budget 15000 THB, I am here to eat, somewhere central to stay",
+        request=(
+            "3 days in Los Angeles, budget 900 USD, I am here to eat, somewhere central to stay"
+        ),
         tags=("smoke",),
         checks=[
             produced_a_plan(),
             feasible(),
-            within_budget(),
+            within_budget(900, "USD"),
             days(3),
             has_accommodation(),
             highlights_on("food"),
@@ -105,15 +121,14 @@ CASES: list[Case] = [
     ),
     Case(
         id="exclusions",
-        # 200 EUR over two days in Lisbon is achievable with one night of lodging. A run
-        # on 2026-08-10 came in at 218 -- the agent not trimming to fit, which is a real
-        # weakness and stays red rather than being tuned away.
-        request="2 days in Lisbon, budget 200 EUR, no hiking and no boat trips",
+        # A modest Boston budget still has room for one night and free public sights. The
+        # exclusions are the real target; changing cities keeps the standing US demo rule.
+        request="2 days in Boston, budget 400 USD, no hiking and no boat trips",
         tags=("smoke",),
         checks=[
             produced_a_plan(),
             feasible(),
-            within_budget(),
+            within_budget(400, "USD"),
             days(2),
             avoids(*HIKING),
             avoids("boat trip", "cruise", "ferry"),
@@ -123,7 +138,7 @@ CASES: list[Case] = [
         id="memory-recall",
         # The exclusion is stated in the setup run and NOT repeated here.
         setup_request="3 days in New York, budget 10000, I do not hike, I like art galleries",
-        request="2 days in Seoul, budget 4000",
+        request="2 days in Los Angeles, budget 600 USD",
         user_id="eval-memory-user",
         tags=("smoke",),
         checks=[
@@ -173,7 +188,7 @@ CASES: list[Case] = [
             produced_a_plan(),
             feasible(),
             days(2),
-            within_budget(),
+            within_budget(400, "USD"),
             has_accommodation(),
         ],
         revise_request="change day 2 lunch to a po-boy place, leave everything else alone",
@@ -182,7 +197,7 @@ CASES: list[Case] = [
             # The claim worth making: the edit is still checked. Not "the model said it
             # kept the budget" -- the same validator ran on the result.
             after(feasible()),
-            after(within_budget()),
+            after(within_budget(400, "USD")),
             after(days(2)),
             after(has_accommodation()),
             now_schedules("po-boy", "po' boy", "poboy"),
@@ -192,14 +207,79 @@ CASES: list[Case] = [
     ),
     Case(
         id="impossible-budget",
-        # 30 USD for 3 days in Singapore is not feasible. The interesting property is
+        # 30 USD for 3 days in Los Angeles is not feasible. The interesting property is
         # that the agent does not silently pretend otherwise: either it fits, or the
         # violation survives into the report. Both are honest; claiming to fit is not.
-        request="3 days in Singapore, budget 30 USD",
+        request="3 days in Los Angeles, budget 30 USD",
         tags=("full",),
-        checks=[produced_a_plan(), within_budget()],
+        checks=[produced_a_plan(), honest_budget_failure(30)],
     ),
 ]
+
+# One chained case exercises three edits, a date shift, and an explicit new trip.
+CASES.append(
+    Case(
+        id="revision-sequence",
+        request=(
+            "2 days in Los Angeles from 2026-10-20 to 2026-10-21, budget 600 USD, food and museums"
+        ),
+        checks=[produced_a_plan(), feasible(), within_budget(600, "USD"), days(2)],
+        tags=("full",),
+        steps=(
+            Step(
+                "Add a visit to Grand Central Market on day 1. Leave day 2 unchanged.",
+                (
+                    produced_a_plan(),
+                    feasible(),
+                    within_budget(600, "USD"),
+                    mentions_any("Grand Central Market"),
+                ),
+                (unchanged_day(1),),
+            ),
+            Step(
+                "Remove Grand Central Market from day 1. Leave day 2 unchanged.",
+                (
+                    produced_a_plan(),
+                    feasible(),
+                    within_budget(600, "USD"),
+                    avoids("Grand Central Market"),
+                ),
+                (unchanged_day(1),),
+            ),
+            Step(
+                "Replace day 2 with a beach day in Santa Monica. Keep day 1 exactly as it is.",
+                (
+                    produced_a_plan(),
+                    feasible(),
+                    within_budget(600, "USD"),
+                    mentions_any("Santa Monica"),
+                ),
+                (unchanged_day(0), changed_day(1)),
+            ),
+            Step(
+                "Move the entire trip to 2026-10-27 through 2026-10-28. "
+                "Keep the budget and party size.",
+                (
+                    produced_a_plan(),
+                    feasible(),
+                    within_budget(600, "USD"),
+                    date_range("2026-10-27", "2026-10-28"),
+                ),
+            ),
+            Step(
+                "New trip: 1 day in Boston on 2026-11-03, budget 150 USD, history.",
+                (
+                    produced_a_plan(),
+                    feasible(),
+                    within_budget(150, "USD"),
+                    days(1),
+                    destination_is("Boston"),
+                ),
+                new_trip=True,
+            ),
+        ),
+    )
+)
 
 CASES_BY_ID: dict[str, Case] = {case.id: case for case in CASES}
 

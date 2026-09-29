@@ -47,8 +47,9 @@ class PlanStreamClient(private val baseUrl: () -> String = { ServerConfig.baseUr
         message: String,
         currency: String = "",
         previous: Itinerary? = null,
+        previousConstraints: TripConstraints? = null,
     ): Flow<PlanEventDto> = callbackFlow {
-        val body = ApiJson.json.encodeToString(PlanRequest(message, currency, previous))
+        val body = ApiJson.json.encodeToString(PlanRequest(message, currency, previous, previousConstraints))
             .toRequestBody("application/json".toMediaType())
 
         val request = Request.Builder()

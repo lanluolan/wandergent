@@ -21,7 +21,7 @@ async def test_the_currency_reaches_the_system_prompt() -> None:
     llm = FakeLLM([completion(content=ITINERARY_JSON)])
 
     await plan_trip(
-        "3 days in Chicago", client=llm, model="test-model", today=TODAY, currency="USD"
+        "2 days in Chicago", client=llm, model="test-model", today=TODAY, currency="USD"
     )
 
     prompt = system_prompt_of(llm)
@@ -34,7 +34,7 @@ async def test_no_currency_leaves_the_choice_to_the_model() -> None:
     also prompt tokens on every call, so it must not ship when unused."""
     llm = FakeLLM([completion(content=ITINERARY_JSON)])
 
-    await plan_trip("3 days in Chicago", client=llm, model="test-model", today=TODAY)
+    await plan_trip("2 days in Chicago", client=llm, model="test-model", today=TODAY)
 
     assert "settles up in" not in system_prompt_of(llm)
 

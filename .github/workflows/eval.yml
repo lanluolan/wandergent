@@ -11,6 +11,15 @@ on:
         type: choice
         default: smoke
         options: [smoke, all]
+      input_usd_per_million:
+        description: "Model input USD per 1M tokens"
+        default: "0.20"
+      cached_usd_per_million:
+        description: "Model cached-input USD per 1M tokens"
+        default: "0.02"
+      output_usd_per_million:
+        description: "Model output USD per 1M tokens"
+        default: "1.20"
 
 jobs:
   eval:
@@ -40,6 +49,11 @@ jobs:
         run: |
           uv run python -m evals.run \
             ${{ inputs.subset == 'all' && '--all' || '' }} \
+            --today 2026-09-28 \
+            --input-usd-per-million ${{ inputs.input_usd_per_million }} \
+            --cached-usd-per-million ${{ inputs.cached_usd_per_million }} \
+            --output-usd-per-million ${{ inputs.output_usd_per_million }} \
+            --pricing-source https://developers.openai.com/api/docs/models/gpt-5.6-luna \
             --json eval-result.json
 
       - uses: actions/upload-artifact@v7.0.1

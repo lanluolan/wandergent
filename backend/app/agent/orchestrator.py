@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -30,6 +30,7 @@ from langgraph.graph import END, START, StateGraph
 from openai import AsyncOpenAI
 
 from app.agent import brief
+from app.agent.constraints import TripConstraints, resolve_constraints, starts_new_trip
 from app.agent.events import PlanEvent
 from app.agent.llm import (
     TRUNCATION_ERROR,
@@ -54,11 +55,18 @@ from app.agent.results import (
     tool_calls_spent,
     tool_rounds_spent,
 )
+from app.agent.revision import (
+    RevisionScope,
+    enforce_revision_scope,
+    resolve_revision_scope,
+    revision_payload,
+)
 from app.agent.schemas import Itinerary, itinerary_schema_json
 from app.agent.transfers import confirm_transfers
 from app.agent.validation import (
     MIN_TRANSFER_MINUTES,
     ValidationReport,
+    transfer_candidates,
     validate_itinerary,
 )
 from app.config import settings
@@ -100,9 +108,10 @@ LAST_ROUND_NOTICE = (
     "notes rather than leaving the plan unfinished."
 )
 
-# Same reasoning for constraint violations: one chance to fix them, then ship the plan
-# with the remaining problems surfaced in the validation report rather than hidden.
-MAX_CONSTRAINT_REPAIRS = 1
+# A repair can fix the named defect while creating a new adjacent transfer or hours
+# conflict. Three bounded passes cover that observed chain; validation runs after each,
+# and an unresolved plan still ships with its findings instead of looping indefinitely.
+MAX_CONSTRAINT_REPAIRS = 3
 
 SYSTEM_PROMPT = """You are Wandergent, a travel planning assistant.
 
@@ -192,6 +201,19 @@ REVISION_REQUEST = """This is my current itinerary:
 
 Now change it: {request}"""
 
+CONTEXT_POLICY = """Context priority, highest first:
+1. System rules and request-owned hard constraints.
+2. The traveller's current request.
+3. Verified tool facts from this run, including their source and collection time.
+4. The editable part of the previous itinerary.
+5. Relevant durable preferences; the current request overrides them.
+
+Conversation history is not retained between requests. A revision receives only the
+previous itinerary, the current edit and durable preferences. Tool work is bounded by
+{tool_calls} calls; verified venue briefs are bounded by {venues} venues; durable memory
+is bounded by its recall cap. Locked days may be compacted because the server restores
+their exact content after every model turn."""
+
 CURRENCY_RULE = """The traveller settles up in {currency}. Set the itinerary's \
 currency field to {currency} and estimate every cost in it, whatever the destination \
 uses locally. If they state a budget in another currency, treat the amount as {currency} \
@@ -213,10 +235,13 @@ CONSTRAINT_REPAIR_INSTRUCTION = """That itinerary is well-formed but not feasibl
 {violations}
 
 Fix every point above and return the corrected JSON object only. Keep everything that \
-was already fine -- do not rewrite the whole trip."""
+was already fine -- do not rewrite the whole trip. Before returning, scan the entire \
+repaired plan again for budget, overlaps, opening hours and every consecutive real-stop \
+transfer. Moving one item must not create a new zero-gap hop or another violation."""
 
 
 class PlanState(TypedDict, total=False):
+    constraints: TripConstraints
     """Everything one planning run carries between nodes.
 
     The LLM client lives here rather than in a context schema: there is no checkpointer,
@@ -258,6 +283,8 @@ class PlanState(TypedDict, total=False):
     #: Venue name -> (latitude, longitude), harvested from `search_places`. Rendered
     #: into a distance block so the schedule is written with spatial facts in hand.
     place_points: dict[str, tuple[float, float]]
+    place_addresses: dict[str, str]
+    fact_collected_at: str
     #: How many venues the brief last covered, so it is only re-sent when the picture
     #: actually changed rather than once per tool round.
     brief_covered: int
@@ -274,6 +301,8 @@ class PlanState(TypedDict, total=False):
     # Constraint loop
     report: ValidationReport | None
     repairs_left: int
+    previous: Itinerary | None
+    revision_scope: RevisionScope | None
 
 
 def _tool_key(call) -> str:
@@ -339,6 +368,16 @@ def harvest_place_prices(tool: str, payload: str, into: dict[str, str]) -> None:
         name, level = place.get("name"), place.get("price_level")
         if name and isinstance(level, str) and level:
             into[name] = level
+
+
+def harvest_place_addresses(tool: str, payload: str, into: dict[str, str]) -> None:
+    """Keep display addresses for the bounded verified-facts brief."""
+    if tool != "search_places":
+        return
+    for place in _places_in(payload):
+        name, address = place.get("name"), place.get("address")
+        if name and isinstance(address, str) and address:
+            into[name] = address
 
 
 async def _execute_tool_call(call, context: dict) -> tuple[ToolCallRecord, dict]:
@@ -464,6 +503,7 @@ async def run_tools(state: PlanState) -> dict:
     hours = dict(state.get("place_hours") or {})
     prices = dict(state.get("place_prices") or {})
     points = dict(state.get("place_points") or {})
+    addresses = dict(state.get("place_addresses") or {})
 
     for call in state["pending"]:
         key = _tool_key(call)
@@ -496,6 +536,7 @@ async def run_tools(state: PlanState) -> dict:
         harvest_place_hours(record.name, reply["content"], hours)
         harvest_place_prices(record.name, reply["content"], prices)
         harvest_place_points(record.name, reply["content"], points)
+        harvest_place_addresses(record.name, reply["content"], addresses)
         if not record.ok:
             logger.info("tool %s degraded: %s", record.name, record.error)
         writer(PlanEvent(type="tool_result", name=record.name, ok=record.ok, code=record.code))
@@ -504,9 +545,19 @@ async def run_tools(state: PlanState) -> dict:
     # over *before* venues and times are picked, rather than leaving the model to re-read
     # raw tool JSON while composing. Sent only when the set of known venues grew, so two
     # searches do not leave two near-identical briefs in the conversation.
-    known = len({*points, *hours, *prices})
+    known = len({*points, *hours, *prices, *addresses})
     announced = state["brief_covered"]
-    block = brief.render(points, hours, prices) if known > announced else None
+    block = (
+        brief.render(
+            points,
+            hours,
+            prices,
+            addresses,
+            collected_at=state["fact_collected_at"],
+        )
+        if known > announced
+        else None
+    )
     if block is not None:
         messages.append({"role": "system", "content": block})
         announced = known
@@ -530,6 +581,7 @@ async def run_tools(state: PlanState) -> dict:
         "place_hours": hours,
         "place_prices": prices,
         "place_points": points,
+        "place_addresses": addresses,
         "brief_covered": announced,
     }
 
@@ -538,6 +590,9 @@ async def parse(state: PlanState) -> dict:
     """Fast path: the turn that ended the tool loop is usually the itinerary already."""
     turn = state.get("last_turn") or Turn()
     itinerary, errors = parse_turn(turn)
+    itinerary = enforce_revision_scope(
+        itinerary, state.get("previous"), state.get("revision_scope")
+    )
     return {
         "itinerary": itinerary,
         "parse_errors": errors,
@@ -564,7 +619,6 @@ async def emit(state: PlanState) -> dict:
         messages.append({"role": "user", "content": instruction})
     else:
         writer(PlanEvent(type="stage", name="repairing", message="Fixing the format"))
-        messages.append({"role": "assistant", "content": state["raw"]})
         messages.append(
             {
                 "role": "user",
@@ -582,7 +636,11 @@ async def emit(state: PlanState) -> dict:
     ):
         writer(event)
 
+    messages.append(assistant_message(turn))
     itinerary, errors = parse_turn(turn)
+    itinerary = enforce_revision_scope(
+        itinerary, state.get("previous"), state.get("revision_scope")
+    )
     if itinerary is None:
         logger.info("itinerary failed to parse on attempt %s: %s", attempt + 1, errors)
 
@@ -604,12 +662,16 @@ async def validate(state: PlanState) -> dict:
         writer(PlanEvent(type="stage", name="validating", message="Checking the itinerary"))
 
     report = validate_itinerary(
-        state["itinerary"], state.get("place_hours"), state.get("place_prices")
+        state["itinerary"],
+        state.get("place_hours"),
+        state.get("place_prices"),
+        constraints=state.get("constraints"),
     )
-    # The heuristic proposes, measurement disposes: only flagged pairs get a real travel
-    # time, so this costs a few Routes calls rather than one per activity pair. Without a
-    # maps key it is a no-op and the heuristic stands.
-    report = await confirm_transfers(report)
+    # The heuristic proposes, measurement disposes. Add advisory candidates for the hops
+    # the string heuristic considered safe, then measure both sets within the route-call
+    # cap. Without a maps key the original findings and advisories remain visible.
+    report = transfer_candidates(state["itinerary"], report)
+    report = await confirm_transfers(report, allowed_modes=state["constraints"].allowed_modes)
     writer(PlanEvent(type="validation", violations=report.violations))
     return {"report": report}
 
@@ -644,6 +706,7 @@ async def repair(state: PlanState) -> dict:
     messages.append(assistant_message(turn))
 
     repaired, parse_errors = parse_turn(turn)
+    repaired = enforce_revision_scope(repaired, state.get("previous"), state.get("revision_scope"))
     if repaired is None:
         # The repair came back malformed. Keep the plan we have -- it is at least
         # well-formed -- and let the unresolved violations ship in the report.
@@ -676,6 +739,7 @@ async def finish(state: PlanState) -> dict:
                 type="result",
                 result=PlanResult(
                     itinerary=None,
+                    constraints=state["constraints"],
                     tool_calls=state["records"],
                     warnings=warnings,
                     raw_reply=state.get("raw"),
@@ -694,6 +758,7 @@ async def finish(state: PlanState) -> dict:
             type="result",
             result=PlanResult(
                 itinerary=itinerary,
+                constraints=state["constraints"],
                 tool_calls=state["records"],
                 warnings=warnings,
                 validation=report,
@@ -773,6 +838,8 @@ async def stream_plan(
     user_id: str = "",
     currency: str = "",
     previous: Itinerary | None = None,
+    constraints: TripConstraints | None = None,
+    previous_constraints: TripConstraints | None = None,
     client: AsyncOpenAI | None = None,
     model: str | None = None,
     fast_model: str | None = None,
@@ -791,6 +858,12 @@ async def stream_plan(
     Terminates with exactly one `result` event. Failures raise PlanningError subclasses
     rather than yielding an error event, so the HTTP layer keeps deciding status codes.
     """
+    if starts_new_trip(request):
+        previous = None
+        previous_constraints = None
+    constraints = resolve_constraints(
+        request, previous=previous_constraints, confirmed=constraints, currency=currency
+    )
     llm = client or build_client()
     model = model or settings.openai_model
     if not model:
@@ -820,26 +893,45 @@ async def stream_plan(
         # drift apart.
         min_transfer=MIN_TRANSFER_MINUTES,
     )
+    system_prompt += "\n\n" + CONTEXT_POLICY.format(
+        tool_calls=MAX_TOOL_CALLS,
+        venues=brief.MAX_VENUES,
+    )
     # Estimate in the traveller's currency rather than converting afterwards: conversion
     # needs an FX source, and an hours-old rate makes an estimate look precise. Empty
     # means the model picks.
     if currency:
         system_prompt += "\n\n" + CURRENCY_RULE.format(currency=currency)
+    system_prompt += (
+        "\n\nRequest-owned hard constraints (do not change these in the output): "
+        + constraints.model_dump_json(exclude_none=True)
+    )
     known = await (memory or memory_store).recall(user_id) if user_id else []
     if known:
-        system_prompt += "\n\n" + recall_block([preference.text for preference in known])
+        system_prompt += "\n\n" + recall_block(known)
 
     # The rule is a standing instruction, so it goes in the system prompt; the plan is
     # this turn's data, so it goes in the user turn. Sending the plan rather than
     # replaying the original transcript keeps out tool calls and superseded drafts.
+    revision_scope = None
     if previous is not None:
+        revision_scope = resolve_revision_scope(request, len(previous.days))
         system_prompt += "\n\n" + REVISION_RULE
+        if revision_scope.locked_days:
+            locked = ", ".join(str(index + 1) for index in sorted(revision_scope.locked_days))
+            system_prompt += (
+                "\n\nServer-enforced revision scope: day(s) "
+                f"{locked} are locked. Their activities are omitted from the compact input "
+                "and restored server-side after every generation or repair. Keep a day at "
+                "each original list position."
+            )
         request = REVISION_REQUEST.format(
-            itinerary=previous.model_dump_json(indent=None),
+            itinerary=revision_payload(previous, revision_scope),
             request=request,
         )
 
     state: PlanState = {
+        "constraints": constraints,
         "llm": llm,
         "model": model,
         "fast_model": fast_model,
@@ -861,6 +953,8 @@ async def stream_plan(
         "place_hours": {},
         "place_prices": {},
         "place_points": {},
+        "place_addresses": {},
+        "fact_collected_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "brief_covered": 0,
         "itinerary": None,
         "raw": "",
@@ -869,6 +963,8 @@ async def stream_plan(
         "truncated": False,
         "report": None,
         "repairs_left": MAX_CONSTRAINT_REPAIRS,
+        "previous": previous,
+        "revision_scope": revision_scope,
     }
 
     # Emitted here rather than from a node, so it reaches the client the moment the
@@ -891,6 +987,8 @@ async def plan_trip(
     user_id: str = "",
     currency: str = "",
     previous: Itinerary | None = None,
+    constraints: TripConstraints | None = None,
+    previous_constraints: TripConstraints | None = None,
     client: AsyncOpenAI | None = None,
     model: str | None = None,
     fast_model: str | None = None,
@@ -908,6 +1006,8 @@ async def plan_trip(
         user_id=user_id,
         currency=currency,
         previous=previous,
+        constraints=constraints,
+        previous_constraints=previous_constraints,
         client=client,
         model=model,
         fast_model=fast_model,

@@ -20,9 +20,13 @@ you delete individual preferences. Changes apply to future planning runs.
 
 **The model does not get the last word.** Generated itineraries are checked by code — budget arithmetic, overlapping activities, travel time between places — and violations are fed back for repair. **The repair is then re-validated**, because a model saying it fixed something is not evidence.
 
+**The request remains the authority.** Budget, ISO dates, duration, party size and allowed travel modes are kept outside the generated itinerary and checked after every generation and repair. A model cannot make a plan pass by raising its own budget field or switching a walking leg to a car.
+
 **Costs cannot be faked.** Day and trip totals are Pydantic computed fields derived from the activities, so the model cannot make a plan look in-budget by mis-adding.
 
 **Failure is data, not an exception.** Tools never raise; they return a typed degraded result the agent can plan around. A dead weather API produces a plan with a caveat, not a 500.
+
+**Feedback becomes reviewed regression data.** Signed-in travellers can rate a whole plan or one activity. The server retains only an allowlisted, text-free structural snapshot for 30 days; exported reports remain untrusted until a person reproduces the issue as a test or eval case.
 
 **Portable by construction.** The itinerary is plain JSON validated with Pydantic rather than provider-specific structured outputs — switching the whole system from OpenAI to Xiaomi MiMo took two env vars and zero code.
 
@@ -43,9 +47,12 @@ per case), so the absolute figures describe the subset as it stood on that date.
 Every number came from the eval harness or a traced live run, not an estimate; the reasoning and
 the rejected alternatives behind each are in [`docs/decisions.md`](docs/decisions.md).
 
-**Today**: 440 offline backend tests · 1 MCP protocol test · 59 Android unit tests · 8 LLM eval
-cases. The eval set is not currently passing in full — the constraint work it measures is still
-in progress.
+**Today**: 9 live LLM eval cases cover single plans, memory, impossible budgets, one-off edits,
+five chained edits and switching to a new trip. Each report records source and suite hashes,
+pass/failure reasons, calls, tokens, elapsed time and operator-supplied cost rates.
+The current tree passes 486 offline backend tests (one opt-in MCP test deselected), Ruff,
+94 Android JVM tests and the debug APK build; the live release gate is 7/9 cases and remains red
+for two documented correctness/context failures.
 
 ## Architecture
 
@@ -58,13 +65,13 @@ flowchart LR
     D --> F["Open-Meteo"]
     D --> G["Google Maps · Places / Routes / Static"]
     D --> H["Preference memory · SQLite"]
-    E -.confirm each flagged hop.-> G
+    E -.measure real-stop hops.-> G
     D -.republished.-> I["MCP server"]
 ```
 
-The graph has seven nodes and three cycles: `gather → run_tools → gather` (bounded), `parse → emit → emit` (one retry), and `validate → repair → validate`. Routing lives in small predicate functions; the nodes only do work.
+The graph has seven nodes and three cycles: `gather → run_tools → gather` (bounded), `parse → emit → emit` (one retry), and `validate → repair → validate` (at most three repairs). Routing lives in small predicate functions; the nodes only do work.
 
-The dotted edge back to Routes is the part worth noticing: the constraint layer's travel-time rule is a string heuristic that only *proposes*. Every hop it flags is then confirmed against a real route, measured at the hour the traveller actually sets off — so a failure to measure keeps the original verdict rather than clearing it.
+The dotted edge back to Routes is the part worth noticing: the constraint layer's string heuristic only *proposes*. It also creates advisory candidates for the other real-stop hops, then measures a bounded set at the hour the traveller leaves, using the declared and permitted mode. A fast car route cannot clear a walking plan, and a failed measurement cannot silently declare the hop feasible.
 
 MCP is a **second surface, not a replacement** — the agent keeps calling tools in-process, so no JSON-RPC round trip is added inside one process and per-request identity survives. The memory tool is deliberately not published, because that surface has no authenticated user.
 
@@ -94,6 +101,7 @@ before any public deploy.
 uv run pytest -q                        # offline tests, no key needed
 uv run python -m scripts.smoke_plan     # live end-to-end run (costs tokens)
 uv run python -m evals.run              # LLM regression eval (costs tokens)
+uv run python -m scripts.export_feedback --json .eval/feedback-candidates.json
 ```
 
 Android:

@@ -83,12 +83,26 @@ timeout — the 10 s default cuts it off mid-flight.
 |---|---|---|
 | `message` | string | required, 1–2000 chars |
 | `currency` | string | optional, ISO 4217 (`"USD"`) or empty; anything else is a 422. The plan is **estimated** in it, never converted into it — a conversion would need an FX source, and a stale rate makes an estimate look precise. Empty lets the model use the destination's local currency, which is what callers got before this existed. |
+| `previous` | itinerary or null | The plan to revise. Omit for a new trip. A message beginning with `New trip` starts fresh even if an older client sends one. |
+| `previous_constraints` | `TripConstraints` or null | The request-owned constraint snapshot returned with `previous`. This is the budget/date/party/mode authority across revisions; the itinerary is not. |
+| `constraints` | `TripConstraints` or null | Optional structured confirmation from a trusted UI: `budget`, `currency`, `start_date`, `end_date`, `days`, `travelers`, `allowed_modes`. Explicit values override the narrow parser; unknown fields are a 422. |
 | ~~`user_id`~~ | — | **Removed.** Identity comes from the `Authorization: Bearer <token>` header, never from the body: a body field is a claim the client makes, and anyone could claim anyone else's id. A request with no token is anonymous — nothing is recalled and nothing is stored. |
 
 ### Response `200`
 
 ```json
 {
+  "run_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "feedback_available": true,
+  "constraints": {
+    "budget": 900.0,
+    "currency": "USD",
+    "start_date": "2026-09-14",
+    "end_date": "2026-09-15",
+    "days": 2,
+    "travelers": 2,
+    "allowed_modes": ["WALK", "TRANSIT"]
+  },
   "itinerary": {
     "destination": "Los Angeles",
     "start_date": "2026-09-14",
@@ -108,6 +122,7 @@ timeout — the 10 s default cuts it off mid-flight.
             "title": "Santa Monica Pier",
             "category": "sightseeing",
             "location": "200 Santa Monica Pier, Santa Monica, CA 90401",
+            "travel_mode": null,
             "indoor": false,
             "estimated_cost": 0.0,
             "highlights": [
@@ -122,6 +137,7 @@ timeout — the 10 s default cuts it off mid-flight.
             "title": "Lunch on Ocean Ave",
             "category": "food",
             "location": "1401 Ocean Ave, Santa Monica, CA 90401",
+            "travel_mode": null,
             "indoor": true,
             "estimated_cost": 48.0,
             "highlights": [
@@ -135,6 +151,7 @@ timeout — the 10 s default cuts it off mid-flight.
             "title": "Check in",
             "category": "accommodation",
             "location": "1740 Ocean Ave, Santa Monica, CA 90401",
+            "travel_mode": null,
             "indoor": true,
             "estimated_cost": 0.0,
             "highlights": [],
@@ -154,6 +171,7 @@ timeout — the 10 s default cuts it off mid-flight.
             "title": "The Getty Center",
             "category": "sightseeing",
             "location": "1200 Getty Center Dr, Los Angeles, CA 90049",
+            "travel_mode": null,
             "indoor": true,
             "estimated_cost": 0.0,
             "highlights": [
@@ -179,8 +197,7 @@ timeout — the 10 s default cuts it off mid-flight.
         "start_date": "2026-09-14",
         "end_date": "2026-09-15"
       },
-      "ok": true,
-      "error": null
+      "ok": true
     }
   ],
   "warnings": [],
@@ -194,6 +211,9 @@ timeout — the 10 s default cuts it off mid-flight.
 ### Field notes for the client
 
 - **`itinerary` can be `null` on a `200`** — the model could not produce a valid plan. A `no_itinerary` warning says so, `raw_reply` carries what it said. Render as a failure state; do not crash on the null.
+- **`constraints` is request-owned state.** Send it back as `previous_constraints` with a revision. The validator checks its budget, currency, dates, day count, party size and allowed travel modes after every generation and repair. The model cannot loosen it by changing fields in `itinerary`.
+  - The prose parser only confirms narrow, explicit forms such as `budget 900 USD`, `3 days`, `2 travelers`, ISO dates and `no driving`. A trusted client can send other confirmed values in `constraints`. Contradictory `days` and date ranges are a `422`, not competing instructions for the model.
+- **`run_id`** is an opaque 32-character id for feedback. Show feedback controls only when `feedback_available=true`; anonymous runs and storage failures return false.
 - **Costs are computed server-side** from the activities. Always present in responses, ignored if sent inbound.
 - **`tool_calls` is an audit trail** in call order, with `ok=false` + a `code` when a tool degraded. A thin-looking plan is usually explained here.
   - Codes: `not_configured`, `timed_out`, `unavailable`, `no_match`, `bad_request`, `unknown_tool`. **The code is what crosses; the tool's own reason does not.** That sentence is written for the model and quotes upstream, so sending it once put a raw Open-Meteo URL and a link to MDN's page on HTTP 400 onto a traveller's itinerary. Render your own wording from the code.
@@ -204,11 +224,12 @@ timeout — the 10 s default cuts it off mid-flight.
   - A client older than the server meets unknown codes, so treat `code` as an open string, never an enum that throws.
 - **`highlights`** is a list of concrete specifics on an activity — dishes to order, exhibits worth the queue, the room type. **Often empty**; render it as an optional detail block, never assume it is populated.
 - **`validation`** is the hard-constraint check on the plan as shipped: `{"violations": [{"code", "message", "day", ...}]}`. Empty = feasible.
-  - On `insufficient_transfer` only, four extra fields carry the detail: `origin`, `destination`, `gap_minutes`, and `needed_minutes`. `needed_minutes` is present when the hop was **measured** against real travel times rather than guessed from the location strings — a client can say "needs 25 min, you left 10" instead of a generic warning. All four are absent on other codes. Non-empty means repair was attempted and did **not** fully succeed, so the client must not present the plan as sound. Localize off `code` (`over_budget`, `time_conflict`, `insufficient_transfer`, `day_out_of_range`, `duplicate_day`, `unsociable_hours`, `overlong_day`, `empty_day`, `missing_accommodation`, `vague_venue`, `outside_opening_hours`); `message` is English text meant for the model.
+  - Transfer findings carry `origin`, `destination`, `gap_minutes`, `needed_minutes`, `depart_at_minute` and `travel_mode`. `transfer_unverified` is advisory: the route service could not establish feasibility. `insufficient_transfer` is blocking. Measurements use the leg's declared mode, or walking when no mode was declared; a fast car route cannot clear a walking-only trip. Non-empty blocking findings mean repair did **not** fully succeed, so the client must not present the plan as sound. Localize off `code` (`constraint_mismatch`, `disallowed_transport`, `over_budget`, `time_conflict`, `insufficient_transfer`, `transfer_unverified`, `day_out_of_range`, `duplicate_day`, `unsociable_hours`, `overlong_day`, `empty_day`, `missing_accommodation`, `vague_venue`, `outside_opening_hours`, `understated_cost`); `message` is English text meant for the model.
   - `outside_opening_hours` is checked against the opening hours the run already fetched from Google during `search_places`, not against anything the model reported, so a plan cannot satisfy it by asserting. A venue the run never looked up gets no opinion rather than a closure.
-- **Nullable in every response**: `itinerary`, `raw_reply`, `budget`, `weather`, `location`, `indoor`, activity `notes`. A non-null `Boolean` for `indoor` will throw — "unknown" is a real value.
+- **Nullable in every response**: `itinerary`, `raw_reply`, `budget`, `weather`, `location`, `travel_mode`, `indoor`, activity `notes`. A non-null `Boolean` for `indoor` will throw — "unknown" is a real value.
 - Dates are ISO `YYYY-MM-DD`. `start_time` / `end_time` are local wall-clock `HH:MM`, 24-hour, no timezone — **not instants**.
 - `category` ∈ `sightseeing` `food` `transport` `accommodation` `activity` `rest` `other`. Unrecognised values are coerced to `other`, so the set is closed.
+- `travel_mode` is null or one of `WALK`, `TRANSIT`, `DRIVE`. Transport activities should set it; it is preserved when the client sends a plan back for revision.
 
 ---
 
@@ -266,7 +287,7 @@ data: {"type":"tool_result","name":"get_weather_forecast","ok":true,"code":null,
 - **Exactly one terminal event** (`result` or `error`) ends a run. A stream closing without one means the connection dropped.
 - **Ignore unknown `type` values**, do not error — later phases add event kinds and older clients must keep working.
 - The same tool can appear twice (a later round). Match a `tool_result` to the oldest still-pending call with that `name`. An identical repeat is answered from a per-run cache but still reported, so the trail stays honest.
-- `remember_preference` streams like any other tool; `arguments.preferences` is what the agent chose to remember.
+- `remember_preference` streams like any other tool. Each `arguments.preferences` item has a language-independent `key`, canonical English `text`, and `scope` (`durable` or `this_trip`). Only durable items persist; reusing a key replaces that preference.
 - **Timeouts apply *between* events**, not to the whole stream. 180 s is comfortable; gaps while composing reach ~20 s.
 
 ### Error responses
@@ -360,6 +381,37 @@ Deletion is scoped to the authenticated account and idempotent, including an unk
 The id is a SHA-256 digest of the exact text, keeping preference text out of access-log URLs;
 it is not authorization. Requests never accept a user id. Storage failure returns `503`.
 Deletion affects future recall; existing itineraries and already-running plans stay unchanged.
+
+## Feedback
+
+`POST /feedback` requires a bearer token and returns `204`. It accepts feedback on the
+whole run:
+
+```json
+{
+  "run_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "helpful": false,
+  "category": "validator_miss"
+}
+```
+
+For one activity, add the zero-based pair `day_index` and `activity_index`; they must
+appear together and must name an activity in that run. Categories are `model_error`,
+`tool_error`, `stale_data`, `validator_miss`, `client_error`, and `other`. Unknown runs,
+expired runs, cross-account ids and invalid activity indices all return `404`; malformed
+input is `422`, storage failure is `503`, and a missing session is `401`.
+
+The server keeps an allowlisted diagnostic snapshot for 30 days, capped at 100 runs per
+account. It includes activity times, categories, estimated costs, travel modes, constraint
+values, violation codes and the number of failed tools. It excludes the request, destination,
+venue names, addresses, coordinates, tool arguments, upstream errors and model prose. Feedback
+exports are unreviewed triage candidates; a person must reproduce and encode a regression test
+or eval case before they enter the release gate.
+
+Export the review queue locally with
+`uv run python -m scripts.export_feedback --json .eval/feedback-candidates.json`. The export
+contains no account id, run id or free text and stays outside the evaluator until it has been
+reviewed and reproduced.
 
 `SavedPreference`, extracted from the running app's `/openapi.json` on 2026-09-06:
 
