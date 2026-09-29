@@ -4,16 +4,15 @@ Each case is a real request plus what must be true of the answer. They are chose
 cover the capabilities that previous changes actually broke -- budget arithmetic, the
 tool loop, the constraint layer, memory recall -- not to be exhaustive.
 
-**Destinations are outside mainland China, deliberately** (2026-08-10). The product
-targets international trips, and the maps tools are backed by Google, whose POI data
-inside mainland China is thin -- a Chengdu search returns real but obscure venues with
-one or two reviews. Grading the agent on a market it does not serve, using a data source
-that is weak there, measures the wrong thing twice over.
+**No mainland China destinations** (2026-08-10). The product targets international trips
+and the maps tools are Google-backed, whose POI data there is thin: grading the agent on a
+market it does not serve, with a source that is weak there, measures the wrong thing twice
+over. The spread of other countries is deliberate -- the non-USD cases are what exercise
+currency handling.
 
-**Requests are in English** (2026-08-17), matching the app. They used to be Chinese,
-from when the interface was: an eval should exercise the agent the way the product
-does, and the language of the request decides the language of the plan, which the
-keyword checks then read.
+**Requests are in English** (2026-08-17), matching the app: an eval should exercise the
+agent the way the product does, and the language of the request decides the language of
+the plan, which the keyword checks then read.
 
 Cases tagged `smoke` are the default subset, because a full run costs real tokens.
 """
@@ -39,14 +38,13 @@ from evals.checks import (
     within_budget,
 )
 
-# Words that mean hiking. Long or multi-word on purpose, so they cannot match a place
-# name that merely contains "hill" or "mount" -- "Mount Fuji Museum" is an indoor exhibit.
+# Words that mean hiking. Long or multi-word on purpose, so they cannot match a place name
+# that merely contains "hill" or "mount" -- a "Mountain View Museum" is an indoor exhibit.
 #
-# Bare "climb" was here and was wrong (2026-08-17): it failed a Lisbon plan for "Arco da
-# Rua Augusta -- climb for rooftop views", which is a lift and a staircase inside a
-# monument. Nobody who says "no hiking" means that. A checker that manufactures failures
-# is worse than one that misses some, because it sends the next person chasing a bug that
-# is not there.
+# Bare "climb" was here and was wrong (2026-08-17): it failed a plan for "climb for rooftop
+# views", a lift and a staircase inside a monument. A checker that manufactures failures is
+# worse than one that misses some -- it sends the next person chasing a bug that is not
+# there.
 HIKING = ("hiking", "hike", "trekking", "trek", "mountain climb", "rock climb", "summit trail")
 
 

@@ -4,16 +4,13 @@ What the agent learned about someone that is worth carrying into the next trip:
 "avoids hiking", "travels with a toddler", "vegetarian". Not conversation history --
 that would grow without bound and mostly repeat itself.
 
-**Storage is SQLite via the standard library**, run in a worker thread. Phase 4 moves
-this to PostgreSQL; the swap is behind `PreferenceStore`, so nothing above it changes.
-Using SQLAlchemy now would mean the same behaviour with more dependencies and more
-code to throw away.
+**Storage is SQLite via the standard library**, in a worker thread. Phase 4 moves this to
+PostgreSQL behind `PreferenceStore`, so nothing above it changes.
 
 **Dedup happens twice.** `(user_id, text)` is the primary key, so remembering something
-verbatim is a no-op at the database level rather than a check-then-insert race. On top
-of that, a near-duplicate check catches the restatements a model actually produces --
-"loves museums" after "loves museum", "avoids hiking." after "avoids hiking" -- which
-are different strings and the same fact.
+verbatim is a database-level no-op rather than a check-then-insert race. A near-duplicate
+check then catches the restatements a model actually produces -- "loves museums" after
+"loves museum" -- different strings, one fact.
 """
 
 import asyncio
@@ -37,13 +34,12 @@ MAX_PREFERENCES_RECALLED = 20
 # the account even though only the newest 20 are ever read.
 MAX_PREFERENCES_STORED = 50
 
-# How alike two preferences must be before the newer one is treated as a restatement.
+# How alike two preferences must be before the newer one counts as a restatement.
 #
-# **Deliberately high, and the asymmetry is the reason.** A missed duplicate costs a few
-# prompt tokens against a capped budget. A false one silently discards an *update*, and
-# "avoids hiking" -> "loves hiking" is exactly the pair a looser threshold would merge:
-# they share a word and mean opposite things. At 0.8 only near-identical wording
-# collapses, so contradictions survive to be resolved by recency.
+# **High on purpose**, because the errors are not symmetric: a missed duplicate costs a few
+# prompt tokens, a false one silently discards an *update*. "avoids hiking" -> "loves
+# hiking" share a word and mean opposite things, so only near-identical wording collapses
+# and contradictions survive to be resolved by recency.
 DUPLICATE_SIMILARITY = 0.8
 
 _NON_WORD = re.compile(r"\W+", re.UNICODE)
@@ -204,5 +200,18 @@ class PreferenceStore:
             with self._connect() as connection:
                 cursor = connection.execute("DELETE FROM preferences WHERE user_id = ?", (user_id,))
                 return cursor.rowcount
+
+        return await asyncio.to_thread(delete)
+
+    async def forget_one(self, user_id: str, text: str) -> bool:
+        """Delete one exact preference, scoped to its owner."""
+        await self._ensure_schema()
+
+        def delete() -> bool:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM preferences WHERE user_id = ? AND text = ?", (user_id, text)
+                )
+                return cursor.rowcount > 0
 
         return await asyncio.to_thread(delete)

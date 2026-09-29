@@ -2,14 +2,14 @@
 
 Two dependencies, and the difference between them is the whole authorization model:
 
-- [`viewer`] resolves a token if one was sent and yields None otherwise. Reading the feed
-  and planning a trip work without an account, exactly as they did before -- an anonymous
-  caller simply has no saved-state and no remembered preferences.
+- [`viewer`] resolves a token if one was sent, None otherwise. Reading the feed and
+  planning a trip work without an account -- an anonymous caller just has no saved state
+  and no remembered preferences.
 - [`signed_in`] refuses without a live token. Everything that writes something other
   people see goes through it.
 
-Neither reads an id from the request body, and the bodies no longer have one. That is the
-actual fix: while the field existed, any check on it was a formality.
+Neither reads an id from the request body, and the bodies no longer carry one -- while
+that field existed, any check on it was a formality.
 """
 
 from typing import Annotated
@@ -51,8 +51,7 @@ async def signed_in(
         raise HTTPException(
             status_code=401,
             detail="sign in first",
-            # Named so a client can tell a lapsed session from a missing one and react by
-            # signing out rather than by retrying forever.
+            # Named so a client signs out on a lapsed session rather than retrying it.
             headers={"WWW-Authenticate": "Bearer"},
         )
     return account

@@ -1,26 +1,20 @@
 """Rate limiting, so free-and-instant does not mean unlimited.
 
-Three different things are being protected, and they are worth naming separately because
-the cost of an unlimited request differs by orders of magnitude between them:
+Three things are protected, and the cost of an unlimited request differs between them by
+orders of magnitude:
 
-1. **Money.** `/plan` spends real LLM tokens and Google quota on every call. It is by far
-   the most expensive endpoint here and it was completely open -- one signed-in account
-   could have burned a month's budget in an afternoon.
-2. **Passwords.** PBKDF2 at 600k iterations costs an attacker about 0.2 s per guess, which
-   sounds like a defence until you multiply: roughly 400,000 attempts a day against one
-   account. That is fatal for a weak password.
+1. **Money.** `/plan` spends LLM tokens and Google quota on every call.
+2. **Passwords.** PBKDF2 at 600k iterations costs an attacker ~0.2 s per guess -- which
+   still allows roughly 400,000 attempts a day against one account.
 3. **The feed.** Registration is free and instant, so "20 posts per author" bounds nothing
-   -- an attacker registers more authors.
+   unless registration is bounded too.
 
-**In-memory, single process.** A sliding window of hit timestamps per key. This is honest
-for one server and **wrong for two**: the counters are per process, so N replicas mean N
-times the limit, and a restart forgives everyone. Redis is the Phase 4 answer and this
-lives behind `RateLimiter` so swapping it changes nothing above. Saying that here rather
-than discovering it during a deploy.
+**In-memory, single process.** A sliding window of hit timestamps per key: honest for one
+server and **wrong for two**, since N replicas mean N times the limit and a restart
+forgives everyone. Redis is the Phase 4 answer, behind this same `RateLimiter` interface.
 
 **Failures, not attempts, for login-by-username.** Counting every attempt would let an
-attacker lock a victim out of their own account by guessing wrong on purpose, which trades
-a brute-force hole for a denial-of-service one.
+attacker lock a victim out by guessing wrong on purpose.
 """
 
 import logging
@@ -50,12 +44,9 @@ class Limit:
 PLAN = Limit(count=20, window=3600)
 
 
-#: The ceiling across *everyone*, which is the one that actually bounds the bill.
-#:
-#: Per-account limits do not: accounts are free and instant, so twenty runs an hour each
-#: multiplied by an unbounded number of accounts is an unbounded number of runs. This is
-#: the difference between "no single person can run up the bill" and "the bill has a
-#: maximum". The count comes from `settings.max_plans_per_day`.
+#: The ceiling across *everyone*, and the only one that bounds the bill: accounts are free,
+#: so twenty runs an hour times unlimited accounts is unlimited runs. That is the
+#: difference between "no one person can run up the bill" and "the bill has a maximum".
 def plan_daily_global() -> Limit:
     return Limit(count=settings.max_plans_per_day, window=86_400)
 
@@ -74,8 +65,8 @@ REGISTER_PER_ADDRESS = Limit(count=5, window=3600)
 # Feed flooding by an account that already exists.
 PUBLISH = Limit(count=10, window=3600)
 
-# Reset requests send mail to somebody else's inbox. Without a limit this endpoint is a
-# way to have a stranger's address flooded, using the service's own good name to do it.
+# Reset requests send mail to somebody else's inbox. Unlimited, this endpoint floods a
+# stranger's address using the service's own good name.
 RESET_PER_ADDRESS = Limit(count=5, window=3600)
 
 # Guessing codes. This, not a per-code counter, is what makes an eight-character code
@@ -131,9 +122,8 @@ class RateLimiter:
     def check(self, key: str, limit: Limit) -> float | None:
         """Check and, if allowed, record. The common case.
 
-        A refused request is **not** recorded, so a client that keeps hammering does not
-        push its own window further out. The limit is a ceiling on work done, not a
-        punishment that compounds.
+        A refused request is **not** recorded, so hammering does not push a client's own
+        window further out. The limit is a ceiling on work, not a compounding punishment.
         """
         retry_after = self.blocked(key, limit)
         if retry_after is None:

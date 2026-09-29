@@ -8,16 +8,10 @@ instead of killing the request.
 
 from pydantic import BaseModel
 
-#: Why a tool call did not produce what was asked for, as a closed vocabulary.
-#:
-#: Exists because `error` cannot serve both readers. The model needs the detail -- which
-#: service, what it said -- to route around a failure. The traveller needs a short phrase.
-#: One string doing both put `weather service unavailable: Client error '400 Bad Request'
-#: for url 'https://api.open-meteo.com/v1/forecast?latitude=34.05223&...'` on screen, with
-#: the query string and a link to the MDN page for HTTP 400.
-#:
-#: Only the code crosses to the client, which owns the wording -- the same split the run
-#: warnings already use. Codes are stable API; the sentences behind them are not.
+#: Why a tool call did not deliver, as a closed vocabulary. `error` cannot serve both
+#: readers: the model needs the detail to route around a failure, the traveller needs a
+#: short phrase. Only the code crosses to the client, which owns the wording -- so codes
+#: are stable API and the sentences behind them are not.
 NOT_CONFIGURED = "not_configured"
 TIMED_OUT = "timed_out"
 UNAVAILABLE = "unavailable"

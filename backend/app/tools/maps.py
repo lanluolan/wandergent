@@ -2,30 +2,26 @@
 
 Two capabilities, deliberately separate:
 
-- `search_places` turns "a kushikatsu place in Millennium Park" into venues that **exist**,
-  with an address and a rating. Until this landed, every restaurant and hotel in a plan
-  was generated from model memory: sometimes right, never checked. Specificity without
-  a source makes a model *confidently* wrong, which is worse than vague.
-- `travel_time` gives real durations between two places, which is what the constraint
-  layer needs to stop guessing at "is there time to get there".
+- `search_places` turns "a deep-dish place near Millennium Park" into venues that
+  **exist**, with an address and a rating. Without it every venue comes from model memory:
+  sometimes right, never checked, and specificity without a source is confidently wrong.
+- `travel_time` gives real durations, which is what the constraint layer needs to stop
+  guessing at "is there time to get there".
 
-Modes are WALK, DRIVE and TRANSIT. **The earlier note here said transit "returned no
-route even with a departure time" and was wrong** -- it works everywhere we tested
-except Japan, which has no Google transit coverage through this API. The original probe
-happened to use Chicago, so one regional gap was recorded as a global limitation and the
-constraint layer spent months measuring city hops as walks. Verified 2026-08-17: transit
-routes returned for New York, San Francisco, Chicago, Boston, Seattle, New Orleans,
-Austin, Seoul, Bangkok, Singapore, Lisbon, Istanbul and Paris; empty for Chicago, Boston
-and New York. Callers must therefore treat an empty transit result as "not here" and fall
-back, never as an error.
+Modes are WALK, DRIVE and TRANSIT. **An empty transit result means "no coverage here",
+never an error** -- Google carries transit only where it has the local operator's data, so
+callers fall back to the other modes. Reading one region's gap as a global limitation is
+what made the constraint layer measure city hops as walks for months (docs/decisions.md,
+2026-08-17).
 
-The key is server-side only. The Android client never talks to Google -- it receives
-what this backend produces -- so nothing ships in the APK and no Google Play services
-are needed on device.
+The key is server-side only: the Android client never talks to Google, so nothing ships in
+the APK and no Play services are needed on device.
 """
 
 import asyncio
 import logging
+import re
+from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 
@@ -67,11 +63,10 @@ PLACES_FIELD_MASK = ",".join(
         "places.rating",
         "places.userRatingCount",
         "places.priceLevel",
-        # Opening hours were the largest thing the planner could not know. Without them
-        # a plan can schedule a museum on the day it is shut and nothing downstream can
-        # tell -- the constraint layer checks budget, timing and routing, none of which
-        # notice a locked door. `businessStatus` is the same gap one step worse: a venue
-        # that closed for good still reads as a perfectly good recommendation.
+        # Without hours a plan can schedule a museum on the day it is shut and nothing
+        # downstream notices -- budget, timing and routing checks all pass at a locked
+        # door. `businessStatus` is the same gap worse: a venue closed for good still
+        # reads as a fine recommendation.
         "places.regularOpeningHours",
         "places.businessStatus",
     )
@@ -82,16 +77,13 @@ MAX_PLACES = 8
 DEFAULT_PLACES = 4
 
 # Fallback departure reference, used only when the caller cannot say when the traveller
-# actually sets off. Far enough ahead that timetables are published, and fixed rather
-# than "now" so an unanchored lookup always measures the same.
+# sets off. Far enough ahead that timetables are published, and fixed rather than "now" so
+# an unanchored lookup always measures the same.
 #
-# A single UTC hour cannot be mid-morning everywhere: 11:00 UTC is noon in London,
-# 05:00 in Chicago and 20:00 in Seoul. For the Americas that lands on empty roads and a
-# thin timetable, so both numbers come back at their most flattering -- a Chicago
-# crosstown hop measured 10 minutes by car, which no one would experience at a time they
-# would actually travel. That is why `depart_at` exists: `transfers.py` resolves the
-# destination's real UTC offset and asks about the hour on the plan. This constant is
-# what is left when that resolution fails, and it is still a lower bound.
+# One UTC hour cannot be mid-morning everywhere -- 11:00 UTC is noon in London and 05:00 in
+# Chicago, which lands on empty roads and a thin timetable, flattering both numbers. Hence
+# `depart_at`: `transfers.py` resolves the destination's real offset and asks about the
+# hour on the plan. This constant is the lower bound left when that fails.
 TRANSIT_REFERENCE_DAYS = 2
 TRANSIT_REFERENCE_HOUR_UTC = 11
 
@@ -100,13 +92,9 @@ TRANSIT_REFERENCE_HOUR_UTC = 11
 # flip. Anything nearer than this falls back to the reference above.
 MIN_DEPARTURE_LEAD = timedelta(minutes=10)
 
-# The language venue names and addresses come back in. English by default, matching
-# the app: a plan that reads in English but names every restaurant in Japanese is worse
-# than one that does neither.
-#
-# It stays a *parameter* rather than a constant because the model knows what language
-# the traveller wrote in, and the right answer is not always the interface language --
-# an address you have to show a taxi driver is more useful in the local script.
+# The language venue names and addresses come back in. English by default, matching the
+# app. A *parameter* rather than a constant: the model knows what language the traveller
+# wrote in, and an address to show a taxi driver is more useful in the local script.
 DEFAULT_LANGUAGE = "en"
 
 TravelMode = Literal["WALK", "DRIVE", "TRANSIT"]
@@ -199,10 +187,9 @@ TRAVEL_TOOL_SCHEMA: dict = {
         "name": "get_travel_time",
         "description": (
             "Real travel time between two places, at the hour people actually travel. "
-            # The previous wording said "use it when the gap looks tight", which is
-            # circular: knowing the gap is tight is what the measurement is for, so the
-            # tool was only reached for once the model had already spotted the problem.
-            # Live plans then scheduled a 14-minute walk with a 0-minute gap.
+            # Not "use it when the gap looks tight", which is circular -- the measurement
+            # is how you learn the gap is tight. That wording produced live plans with a
+            # 14-minute walk scheduled into a 0-minute gap.
             "Call it before you commit to a schedule, for any two consecutive activities "
             "in different places -- not only when a gap already looks wrong. The straight-"
             "line distances you were given are estimates; this is the real number. "
@@ -325,9 +312,8 @@ async def _search(
         )
 
     if not found:
-        # An empty result is a fact about the world, not a failure: "there is no such
-        # place here" is exactly what the planner needs to hear, and retrying will not
-        # change it.
+        # A fact about the world, not a failure: "there is no such place here" is what the
+        # planner needs to hear, and retrying will not change it.
         return PlacesResult(
             ok=True,
             query=text_query,
@@ -336,10 +322,9 @@ async def _search(
             code=NO_MATCH,
         )
 
-    # Dropped here rather than described to the model. A permanently closed venue is
-    # never the right answer, and a rule in the prompt is a request the model can
-    # overlook -- filtering is a guarantee it cannot. Google keeps these in results
-    # because they are still real places; for planning they are traps.
+    # Dropped here rather than described to the model: a permanently closed venue is never
+    # the right answer, and a prompt rule is a request the model can overlook. Google keeps
+    # these because they are still real places; for planning they are traps.
     open_for_business = [
         item for item in found if item.get("businessStatus") != "CLOSED_PERMANENTLY"
     ]
@@ -367,20 +352,60 @@ class StaticMap(ToolOutcome):
     places: list[str] = []
 
 
+def _for_comparison(place: str) -> str:
+    """A place string reduced to what two spellings of one address have in common."""
+    return " ".join(re.sub(r"[^\w\s]", " ", place.casefold()).split())
+
+
+def map_stops(places: Iterable[str]) -> list[str]:
+    """The route to draw: trimmed, blanks dropped, repeats-in-a-row collapsed, capped.
+
+    A day naming the same place twice in a row -- "lunch here, then coffee here" -- would
+    otherwise put two markers on one point, the second hidden under the first with its
+    number lost.
+
+    Stops also collapse when one spelling contains the other, since a plan writes the same
+    place two ways in one breath: `30 Rockefeller Plaza, New York, NY 10112` then
+    `Rockefeller Plaza`. The longer spelling wins -- it is the one Google can put on a
+    doorstep.
+
+    Only *consecutive* stops, and only by name: pins that merely land near each other
+    would need every stop geocoded here to tell apart.
+    """
+    stops: list[str] = []
+    for place in places:
+        cleaned = place.strip() if place else ""
+        if not cleaned:
+            continue
+        if stops:
+            previous, current = _for_comparison(stops[-1]), _for_comparison(cleaned)
+            if previous in current or current in previous:
+                # Keep whichever spelling says more about where the door is.
+                if len(cleaned) > len(stops[-1]):
+                    stops[-1] = cleaned
+                continue
+        stops.append(cleaned)
+    return stops[:MAX_MAP_PLACES]
+
+
 def static_map_params(places: list[str], width: int, height: int) -> list[tuple[str, str]]:
     """Query parameters for one day's map: numbered stops joined by a route line.
 
     A list of pairs, not a dict: `markers` repeats once per stop and a dict would keep
     only the last one.
+
+    One marker per *distinct* place, but the line follows the day as given: a hotel at
+    both ends of the day is one pin and a loop, not two pins in the same spot.
     """
     size = f"{min(max(width, 64), MAX_MAP_EDGE)}x{min(max(height, 64), MAX_MAP_EDGE)}"
     params: list[tuple[str, str]] = [("size", size), ("scale", "2")]
-    for label, place in zip(MARKER_LABELS, places, strict=False):
+    distinct = list(dict.fromkeys(place.casefold() for place in places))
+    for label, folded in zip(MARKER_LABELS, distinct, strict=False):
+        place = next(item for item in places if item.casefold() == folded)
         params.append(("markers", f"color:0x00696e|label:{label}|{place}"))
     if len(places) > 1:
-        # The line is the day's shape at a glance -- it is what turns pins into an
-        # itinerary. Straight segments, not road geometry: this is orientation, not
-        # navigation, and road polylines would mean a Routes call per hop.
+        # The line is what turns pins into an itinerary. Straight segments, not road
+        # geometry: this is orientation, and polylines would cost a Routes call per hop.
         params.append(
             ("path", "|".join([f"color:{ROUTE_COLOUR}", "weight:4", *places[:MAX_MAP_PLACES]]))
         )
@@ -399,7 +424,7 @@ async def render_day_map(
     The key stays here: the Android client asks this backend for the image, so nothing
     ships in the APK and the app works on devices with no Google Play services.
     """
-    usable = [place.strip() for place in places if place and place.strip()][:MAX_MAP_PLACES]
+    usable = map_stops(places)
     if not usable:
         return StaticMap(ok=False, error="no places with a location to draw", code=NO_MATCH)
     if not settings.google_maps_api_key:
@@ -456,14 +481,14 @@ async def geocode_places(
 ) -> list[GeocodedPlace]:
     """Resolve place strings to coordinates, in order. Never raises.
 
-    Static Maps geocodes marker strings for us, but the JavaScript API does not: it
-    plots points. Doing it here rather than in the page keeps Geocoding on the server
-    key, so the key the browser gets can be restricted to map rendering alone.
+    Static Maps geocodes marker strings for us; the JavaScript API only plots points.
+    Doing it here keeps Geocoding on the server key, so the browser's key can be
+    restricted to map rendering alone.
 
-    Failures come back as `ok=False` entries in place rather than being dropped, so the
-    caller can still number the stops the way the itinerary does.
+    Failures come back as `ok=False` entries rather than being dropped, so the caller can
+    still number the stops the way the itinerary does.
     """
-    usable = [place.strip() for place in places if place and place.strip()][:MAX_MAP_PLACES]
+    usable = map_stops(places)
     if not usable:
         return []
     if not settings.google_maps_api_key:
@@ -482,8 +507,8 @@ async def geocode_places(
 async def _geocode_all(
     client: httpx.AsyncClient, places: list[str], language: str
 ) -> list[GeocodedPlace]:
-    # Concurrently: a day has up to 19 stops and doing them in series would put the
-    # whole tool timeout budget on one request after another.
+    # Concurrently: a day has up to 19 stops, and in series they would spend the whole
+    # tool timeout budget one request at a time.
     return list(await asyncio.gather(*(_geocode_one(client, place, language) for place in places)))
 
 
@@ -540,17 +565,15 @@ async def local_utc_offset(
 ) -> timedelta | None:
     """The destination's offset from UTC, or None if it cannot be established.
 
-    Two calls -- geocode the place, then ask the Time Zone API about that point -- which
-    is why callers resolve it *once per plan* and reuse it, rather than per lookup.
+    Two calls -- geocode the place, then ask the Time Zone API about that point -- so
+    callers resolve it *once per plan* and reuse it.
 
-    `on` is the trip date, and it is not decoration: the offset is a function of the
-    instant, so a summer trip priced with a winter offset is an hour out, which is
-    exactly the size of error this whole exercise is trying to remove.
+    `on` is the trip date, and it matters: the offset is a function of the instant, so a
+    summer trip measured with a winter offset is an hour out.
 
-    Returns None rather than a guess on every failure path. A wrong offset is worse than
-    no offset: it would silently move every measurement to the wrong hour while looking
-    like it had been fixed, whereas None falls back to a reference that is documented as
-    optimistic.
+    None rather than a guess on every failure path. A wrong offset silently moves every
+    measurement to the wrong hour while looking fixed; None falls back to a reference
+    documented as optimistic.
     """
     if not settings.google_maps_api_key:
         return None
@@ -652,10 +675,9 @@ def _route_body(
         "travelMode": mode,
     }
     if mode == "DRIVE":
-        # Without this the API answers with free-flow times -- a Chicago crosstown hop
-        # comes back as 13 minutes, which is true at 4am and nowhere near true when
-        # anyone is actually travelling. The whole point of measuring is to beat the
-        # model's optimism, and an optimistic measurement just launders it.
+        # Without this the API answers with free-flow times -- a crosstown hop at 13
+        # minutes, true at 4am and nowhere near true when anyone travels. Measuring
+        # exists to beat the model's optimism, not to launder it.
         body["routingPreference"] = "TRAFFIC_AWARE"
     if mode in ("TRANSIT", "DRIVE"):
         body["departureTime"] = _departure_iso(depart_at)

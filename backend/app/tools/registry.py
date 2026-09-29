@@ -4,9 +4,8 @@ Schemas and callables are registered as pairs and the dispatch name is read out 
 the schema, so a rename cannot leave the two halves pointing at different things.
 
 **Request context is injected, never taken from the model.** A tool that needs to know
-*who* is asking (memory, and later anything user-scoped) receives a `context` keyword
-from the caller. Putting the user id in the tool schema instead would let a model name
-whose memory it writes to.
+*who* is asking receives a `context` keyword from the caller. Putting the user id in the
+tool schema instead would let a model name whose memory it writes to.
 """
 
 import inspect
@@ -67,8 +66,7 @@ async def call_tool(
     """Dispatch a tool call from the model.
 
     Always returns an outcome, never raises: the model picked both the name and the
-    arguments, so a typo on its side must come back as feedback it can correct, not
-    as a 500 for the user.
+    arguments, so a typo on its side comes back as feedback it can correct.
     """
     fn = TOOL_FUNCTIONS.get(name)
     if fn is None:
@@ -86,7 +84,7 @@ async def call_tool(
     except TypeError as exc:
         return ToolOutcome(ok=False, error=f"bad arguments for {name}: {exc}", code=BAD_REQUEST)
     except Exception as exc:  # noqa: BLE001 - deliberate boundary, see docstring
-        # Tools promise not to raise, but this is the seam between model-chosen input
-        # and our code; one misbehaving tool must not take the whole request down.
+        # Tools promise not to raise, but this is the seam between model-chosen input and
+        # our code: one misbehaving tool must not take the whole request down.
         logger.exception("tool %s raised unexpectedly", name)
         return ToolOutcome(ok=False, error=f"{name} failed unexpectedly: {exc}", code=UNAVAILABLE)

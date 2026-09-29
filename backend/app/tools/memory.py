@@ -1,13 +1,11 @@
 """The tool the agent uses to remember something about the traveller.
 
-Making this a tool rather than a separate extraction pass is the whole design: the
-model is already reading the request, so noticing "I don't want to hike" costs nothing
-extra, and *what is worth remembering* becomes the agent's judgement rather than a
-regex or a second LLM call on every request.
+A tool rather than a separate extraction pass: the model is already reading the request,
+so noticing "I don't want to hike" costs nothing extra, and *what is worth remembering*
+becomes the agent's judgement rather than a regex or a second LLM call per request.
 
-`user_id` deliberately is **not** a tool argument. Identity comes from the request
-context, injected by the registry -- a model that could name the user whose memory it
-writes to is a model that can write into someone else's.
+`user_id` is **not** a tool argument. Identity comes from the request context, injected by
+the registry -- a model that can name whose memory it writes to can write into anyone's.
 """
 
 import logging
@@ -67,8 +65,8 @@ async def remember_preference(
     """Store durable preferences for the user this request belongs to."""
     user_id = (context or {}).get("user_id") or ""
     if not user_id:
-        # Anonymous requests are legitimate -- the client may have no account yet -- so
-        # this is a no-op rather than an error the model would try to work around.
+        # Anonymous requests are legitimate, so this is a no-op rather than an error the
+        # model would try to work around.
         return RememberOutcome(ok=True, error=None, stored=[], already_known=[])
 
     if not isinstance(preferences, list):

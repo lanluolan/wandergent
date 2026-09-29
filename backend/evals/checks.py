@@ -1,12 +1,11 @@
 """Deterministic checks for eval cases.
 
-No LLM judge. Most eval harnesses need one because "is this output good?" has no
-objective answer -- but this project already has a hard-constraint validator, an
-itinerary with typed fields, and a record of which tools ran, so almost everything
-worth asserting is a plain function of the result.
+No LLM judge. Most harnesses need one because "is this output good?" has no objective
+answer -- but this project has a hard-constraint validator, a typed itinerary and a record
+of which tools ran, so almost everything worth asserting is a plain function of the result.
 
-A check returns `None` when it passes and a failure reason when it does not, so the
-report says *why* rather than just `False`.
+A check returns `None` when it passes and a failure reason when it does not, so the report
+says *why* rather than just `False`.
 """
 
 from collections.abc import Callable
@@ -42,12 +41,11 @@ class RevisionCheck:
 def _scheduled_text(result: PlanResult) -> str:
     """What is actually on the schedule: activity titles, places and categories.
 
-    Deliberately excludes day summaries, activity notes and trip notes. Those are
-    *commentary about* the plan, and the first live eval run proved why that matters:
-    a plan that correctly avoided hiking said so in its notes -- "已避免爬山（如南山、
-    歌乐山）" -- and a keyword check over all text called that a violation. The claim
-    being tested is "nothing hiking-related is scheduled", and only the schedule can
-    answer it.
+    Excludes day summaries, activity notes and trip notes, which are *commentary about*
+    the plan. The first live eval run proved why: a plan that correctly avoided hiking
+    said so in its notes, and a keyword check over all text called that a violation. The
+    claim under test is "nothing hiking-related is scheduled", which only the schedule
+    can answer.
     """
     itinerary = result.itinerary
     if itinerary is None:
@@ -74,10 +72,9 @@ def produced_a_plan() -> Check:
 def feasible() -> Check:
     """The hard-constraint layer is the grader: zero unresolved violations.
 
-    The failure text carries the *specifics*, not just the codes. A report reading
-    "insufficient_transfer, insufficient_transfer, insufficient_transfer" says a rule
-    fired three times and nothing about which hops or how tight -- which is a debugging
-    session, not a finding. Same lesson the keyword checks learned on 2026-08-05.
+    The failure text carries the *specifics*, not just codes: "insufficient_transfer"
+    three times says a rule fired thrice and nothing about which hops or how tight,
+    which is a debugging session rather than a finding.
     """
 
     def describe(violation) -> str:
@@ -141,12 +138,9 @@ def used_tool(name: str) -> Check:
 def avoids(*keywords: str) -> Check:
     """Nothing in the user-visible text mentions what the traveller ruled out.
 
-    Multi-character keywords only: a bare 山 would flag 中山公园, which is a park.
-
-    Failures quote the surrounding text, because a keyword match is not proof on its
-    own -- a plan that says "no hiking involved" contains the word too, and a check
-    that cannot tell those apart would send the next person chasing a bug that is not
-    there.
+    Multi-character keywords only: one CJK character matches half the place names in a
+    city. Failures quote the surrounding text, because a keyword match is not proof --
+    a plan saying "no hiking involved" contains the word too.
     """
 
     def check(result: PlanResult) -> str | None:
@@ -204,11 +198,10 @@ def has_accommodation() -> Check:
 def highlights_on(category: str, coverage: float = 0.5) -> Check:
     """Enough activities of a kind carry concrete specifics.
 
-    Not a hard constraint, deliberately: an itinerary without dish recommendations is
-    still feasible, so failing validation over it would trigger repair rounds for a
-    matter of degree. It belongs here instead, where it is measured rather than
-    enforced. Coverage rather than "all", because some venues genuinely have nothing
-    worth calling out and a check that fails on those is noise.
+    Not a hard constraint: an itinerary without dish recommendations is still feasible, so
+    failing validation would spend repair rounds on a matter of degree. Measured here
+    instead. Coverage rather than "all", because some venues have nothing worth calling
+    out and failing on those is noise.
     """
 
     def check(result: PlanResult) -> str | None:
@@ -274,9 +267,9 @@ def _activity_keys(result: PlanResult) -> set[tuple[str, str]]:
 def after(check: Check) -> RevisionCheck:
     """Apply an ordinary check to the revised plan.
 
-    This is what makes the eval express the actual promise of the feature: an edit is
-    still budget-checked, still schedule-checked, still route-checked. `after(feasible())`
-    is the assertion that a chat window cannot make.
+    This is the promise of the feature, expressed: an edit is still budget-checked,
+    schedule-checked and route-checked. `after(feasible())` is the assertion a chat
+    window cannot make.
     """
     return RevisionCheck(f"after edit: {check.name}", lambda _before, revised: check(revised))
 
@@ -298,11 +291,10 @@ def now_schedules(*words: str) -> RevisionCheck:
 def kept_most_activities(min_fraction: float = 0.6) -> RevisionCheck:
     """Most of the trip survived the edit untouched.
 
-    The check that stops "revision" from meaning "regenerate". A model told to swap one
-    lunch can produce a completely different, completely valid three days -- passing
-    every other check while being the wrong answer. Observed live: swapping one lunch
-    left 7 of 8 activities byte-identical, so a 0.6 floor has room for a knock-on
-    retime or two without room for a rewrite.
+    What stops "revision" meaning "regenerate": a model told to swap one lunch can produce
+    a completely different, completely valid three days, passing every other check while
+    being the wrong answer. Observed live, swapping one lunch left 7 of 8 activities
+    identical, so a 0.6 floor allows a knock-on retime without allowing a rewrite.
     """
 
     def check(before: PlanResult, revised: PlanResult) -> str | None:

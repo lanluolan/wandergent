@@ -1,12 +1,11 @@
 """Events emitted while a plan is being produced.
 
-One flat model rather than a discriminated union of six: the payloads are small, and a
-single wire type keeps the Android client's deserialisation to one data class instead
-of a sealed hierarchy plus polymorphic configuration. `type` says which fields are
-meaningful.
+One flat model rather than a union of six: the payloads are small, and a single wire type
+keeps the Android client to one data class instead of a sealed hierarchy. `type` says
+which fields are meaningful.
 
-These are the contract for `POST /plan/stream`, so renaming a field here is a breaking
-API change -- see docs/api.md.
+The contract for `POST /plan/stream`, so renaming a field here is a breaking API change
+-- see docs/api.md.
 """
 
 from typing import Literal

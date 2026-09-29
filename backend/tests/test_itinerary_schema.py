@@ -77,6 +77,6 @@ def test_minimal_itinerary_has_sane_defaults() -> None:
         {"destination": "Chicago", "start_date": "2026-08-06", "end_date": "2026-08-08"}
     )
     assert trip.travelers == 1
-    assert trip.currency == "CNY"
+    assert trip.currency == "USD"
     assert trip.budget is None
     assert trip.total_estimated_cost == 0.0

@@ -1806,3 +1806,267 @@ right edge of the screen -- seen on a live run the moment the weather lookup fai
 The status slot now only ever holds a status word, the reason gets its own full-width line
 below, and the label takes `weight(1f)` so it yields rather than pushing the status out.
 
+
+## Bring-your-own-key is removed; the account is the operator's again (2026-08-19)
+
+Reverses the four decisions above it -- "A caller can bring their own LLM key",
+"Bringing a key becomes the main path", "The server has no LLM account", "The form asks
+the server what it must ask the traveller". They stay in this file: the reasoning that
+led there was sound, and what changed is a fact none of it had.
+
+What changed: the promise the feature makes is "bring any provider's key and it works",
+and that promise cannot be kept by the code that was accepting the key. "OpenAI-compatible"
+is a family of dialects, not one contract, and the divergences land exactly where this
+agent lives -- `max_tokens` vs `max_completion_tokens` (OpenAI's own reasoning models
+reject the former), output ceilings that 400 rather than clamp (Anthropic), `response_format`
+and `stream_options` that are honoured / ignored / refused depending on the host, non-first
+`system` messages, streamed tool calls with no `id`, and models with no function calling at
+all -- which this agent's whole tool loop requires. There is no capability-discovery
+endpoint to ask any of this, so a general client has to negotiate by sending, reading the
+error and retrying, and its correctness can only be established by a paid matrix run
+against every provider that then drifts. Bought with the operator's maintenance, paid for
+in the traveller's failed plans.
+
+The rest of it was already a cost, not a benefit. The base URL is an address the *server*
+then calls on a stranger's behalf, so an SSRF allowlist had to exist, be maintained, and be
+explained in the app -- to a person who could only find out by typing an endpoint and
+getting a 400, since the list was never published to the client. And the error taxonomy the
+feature actually needed was never built: every upstream failure, including "your key is
+wrong", surfaced as a 502.
+
+So: `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` in `.env` are the one account
+again, endpoint and model default to what the project runs on (the convention this file
+argued for before BYOK: name what you actually use), and no header supplies any of them.
+Gone with it: `LlmOverride`, `parse_override`, `allowed_byok_base_urls`,
+`DEFAULT_BYOK_BASE_URLS`, `LLM_BYOK_BASE_URLS`, the `llm` block on `/health`, the
+"AI model" screen, and `LlmCredentials` on the client.
+
+Kept from those four commits, because each stands on its own premise: the endpoint typo
+check at boot, the `stream_plan` guard against an empty model name, and the eval / smoke
+scripts naming all three missing settings at once rather than one rerun at a time.
+
+The blank-endpoint rule inverted, though. It was a boot *failure* while the field had no
+default; with one, blank means unset, and refusing it would have crashed `eval.yml`, which
+passes `${{ vars.OPENAI_BASE_URL }}` -- the empty string when that repository variable is
+not set. `pydantic-settings` lets an empty env var override a default, which is the actual
+trap; a `mode="before"` validator hands back the default for both endpoint and model. The
+missing-scheme check stays a hard failure, because no default can rescue a typo.
+
+`SettingsStore.forgetLlmCredentials` deletes the key from any device that stored one. A
+credential the UI can no longer reach is not a credential that stopped existing.
+
+## The offline suite was not offline, part two: it wrote to the real databases (2026-08-19)
+
+170 shared trips from a "traveller0" account, all three-day Chicago stubs with no days in
+them, were sitting in the community feed on the device. Ten per `uv run pytest`, seventeen
+runs deep.
+
+`test_publishing_is_capped_per_account` registers an account and publishes until the limit
+refuses it. Its `client` fixture redirects the *auth* store into `tmp_path` -- because the
+test needed cheap password hashing -- and says nothing about the community store, so every
+publish went through `app.community.store`, the singleton built from
+`settings.community_db_path`. The test asserts a 201 and a 429 and gets both either way,
+which is why nothing failed for seventeen runs. The pollution was only visible by opening
+the app.
+
+The earlier entry of this name fixed what the suite *reads*; this is what it *writes*.
+`conftest.py` now redirects all three stores per test, autouse. Each has to be patched
+where it was imported *to* as well as where it was created -- `main.auth_store`,
+`main.community`, `orchestrator.memory_store`, `tools.memory.default_store` -- since those
+modules bound the instance at import. Missing one is silent by construction: the test
+passes and the write lands in the developer's database.
+
+Free, because the stores open SQLite lazily: 449 tests, 26 s, unchanged. Confirmed by
+diffing row counts and file mtimes across a full run.
+
+The 170 rows were deleted by hand (backup taken first). The four "Seed N" authors are
+deliberate demo data and stayed.
+
+## The demo account is a new account, not a renamed one (2026-08-20)
+
+`verifytest` was going to be on camera. The tempting fix was to rename it server-side --
+it owns the memories and the Los Angeles transcript -- but the client cannot see a rename:
+`AuthRepository.cache()` finds the local Room row **by username**, so an account renamed on
+the server matches nothing on the device, returns early, and the profile keeps drawing the
+old name. Local rows are keyed by a local id and joined to the server account through
+`serverAccountId`; the username is the lookup key on the way in.
+
+So the demo account is a fresh registration -- `jordanlee` / "Jordan Lee" -- signed in on
+the device through the real screen. Cost of that choice, and it is the whole cost: the new
+local row starts empty, so Saved, Plan and the server-side preference memory begin at zero.
+Nothing was destroyed; `verifytest`'s library and transcript are still under its own local
+row and come back by signing in as it.
+
+Worth knowing before the recording: the sign-in screen still offers "Forgot your password?",
+and the new account has no email, so that path dead-ends by design (reset needs a *proven*
+address). And the device's IME interrupts the first tap into any text field with its own
+cloud-candidates dialog -- it will appear on camera unless it is dismissed once beforehand.
+
+## Demo data is real output, seeded three ways (2026-08-20)
+
+The community feed, the library and the plan transcript all had to have something in them
+before a recording, and each was filled the cheapest way that still shows real work:
+
+- **The New York trip was planned on the device**, through the app, so the transcript and
+  the live progress stages are genuine. Its first draft came back **$1040 against a $900
+  budget with a time overlap**, red card and all -- the constraint layer catching exactly
+  what it exists to catch. One follow-up message ("Bring it under 900 USD and fix the
+  overlap on day 2, keep the rest of the trip") returned **$830 with zero violations**,
+  having swapped the Hilton for Radio City Apartments and kept the rest. That is the second
+  revision shape ever verified against the real model, after the restaurant swap.
+- **San Francisco and Chicago were planned through `POST /plan`** and published straight to
+  the feed. Both came back clean (527 and 723 USD, no violations) in **101 s and 89 s** --
+  a useful counterweight to the "a plan takes four minutes" figure from 08-19, which was
+  measured on the streaming path under concurrent load.
+- **A feed where every card says "Shared by you" does not read as a community.** The two
+  cached plan payloads were republished under `mayatorres` / "Maya Torres" and `danielkim` /
+  "Daniel Kim", Jordan's own copies withdrawn, and Maya's San Francisco saved into Jordan's
+  library from the feed -- which also exercises the save path. Cost: no tokens, because the
+  plan JSON was already on disk.
+
+Two things that only showed up by doing this:
+
+**Every single run hit the 16-call tool budget.** New York surfaced the yellow "built on
+less research than usual" card, San Francisco dropped 8 calls, Chicago 4. `MAX_TOOL_CALLS`
+was sized when a run used fewer; it is now the normal ceiling rather than a fuse, and the
+plans that miss transfer and opening-hours checks are the same plans that ran out of
+lookups. Recorded in `open-issues.md`.
+
+**Memory crosses cities.** The two seed runs wrote seven preferences to the demo account --
+including "loves jazz music" and "loves deep-dish pizza" from the Chicago request -- and
+the *New York* plan, generated minutes later, put a jazz supper club and Emmett's deep-dish
+in the itinerary. Recall works; what is missing is any sense that a preference might be
+about one trip rather than the traveller, and any UI to see or drop one. Three rows were
+deleted by hand before the recording (backup first).
+
+**The reporting code must never be what loses a run.** The first two seed attempts planned
+successfully and then died printing the result -- `total_cost` instead of
+`total_estimated_cost` -- throwing away four minutes and the tokens with it. The script now
+writes the response to `plan_<slug>.json` the moment it arrives and republishes from that
+file on a re-run.
+
+## A walk between two places is not a stop (2026-08-20)
+
+Two things were wrong with the day maps and both came from one line on the client:
+`day.activities.mapNotNull { it.location }`. Every activity contributed a marker,
+including the `transport` legs -- whose `location` is the leg, not a place: "W 30th St to
+W 53rd St". Google cannot resolve that, so it drew the day, stamped
+`Map error: g.co/staticmaperror` across the corner, **and dropped the route line
+entirely** -- the path parameter contained the same unresolvable strings. Measured on the
+New York day 2: 11 markers requested, 9 drawn, none joined, error badge on.
+
+`DayMapClient.stops()` now drops transport activities and collapses a place repeated in a
+row. The same day: 6 stops, numbered 1-6, joined by the line, no badge.
+
+The server does not trust the caller for this either, because old saved plans re-render
+through the same endpoint and MCP clients exist:
+
+- `map_stops()` collapses consecutive repeats before anything is drawn.
+- `static_map_params()` draws **one marker per distinct place** while the line still
+  follows the day as given -- a hotel at both ends of the day is one pin and a loop, not
+  two pins in the same spot with one number lost under the other.
+- Consecutive stops also collapse when one spelling contains the other, which is how
+  plans actually repeat themselves: `30 Rockefeller Plaza, New York, NY 10112` followed by
+  `Rockefeller Plaza`. The longer spelling wins -- it is the one Google can put on a
+  doorstep. Only neighbours, and only by name: two markers that merely land near each
+  other would need every stop geocoded to tell apart, which is a paid call per stop.
+
+Fixed alongside, same family: `/day-map/interactive` and `day_map_page()` still defaulted
+to `zh-CN`, as did `search_places` over MCP, so the embedded map came up labelled in
+Chinese after the product moved to English on 2026-08-17. All three now take
+`DEFAULT_LANGUAGE`.
+
+454 backend tests, ruff clean, Android tests green, verified on the device against the
+saved New York plan.
+
+## The itinerary's fallback currency is USD (2026-08-20)
+
+`Itinerary.currency` defaulted to `CNY` on both sides of the wire -- `schemas.py` and the
+Android `PlanDto` mirror -- left over from before the product moved to English and US
+destinations. It is only a fallback: a request that names a currency gets `CURRENCY_RULE`
+in the system prompt, and an empty one deliberately lets the model use the destination's
+local currency. It surfaces when a plan arrives with the field missing, which the
+validate-and-repair path allows, and then a Los Angeles trip prices itself in yuan.
+
+Both defaults are now `USD`, with a comment on each pointing at the other -- they are one
+decision stored twice, and changing one alone is how they drifted. Also fixed: the
+scripted itinerary in `tests/fakes.py`, a Chicago trip billed in `CNY`.
+
+Everything else was already `USD`: the request field, `docs/api.md`, the community
+fixtures, every Android test payload. 454 backend tests, ruff clean, Android tests and
+`assembleDebug` green.
+
+## Backend comment pass, and the stale claims it turned up (2026-08-20)
+
+Tightened comments and docstrings across `backend/` -- roughly 190 comment lines out of
+2000 removed, keeping every claim, reason and gotcha and dropping the retold history that
+already lives here. Rationale belongs in this file; code comments carry what the next
+reader needs at that line.
+
+Reading every comment against the code found five that had gone false:
+
+- **`mcp_server.py` told MCP clients transit "is not available from the upstream
+  service".** That was the regional gap read as a global one, corrected here on
+  2026-08-17 for the agent's own tools -- and never corrected on the MCP surface, which
+  is a published contract. External clients were being told not to ask for a mode that
+  works. `scripts/probe_maps.py` carried the same claim and skipped TRANSIT entirely; it
+  now probes all three modes, treating an empty transit answer as coverage information
+  rather than a failure.
+- **`get_weather_forecast(language="zh")`** -- the geocoding language defaulted to
+  Chinese, from before the product moved to English. Now `DEFAULT_LANGUAGE = "en"`,
+  matching `maps.py`.
+- **`probe_maps.py` geocoded the literal address `"Boston, Japan"`**, a botched
+  find-replace from the old demo set. The probe reported OK on a nonsense address.
+- **`main.py`'s community section said no endpoint is authenticated**, and
+  `community/store.py` said there is no rate limiting. Both stopped being true when auth
+  and the limiter landed; publish, save and withdraw all take `Depends(signed_in)`.
+- **`enforce_plan_budget` still explained itself in terms of callers bringing their own
+  LLM key**, removed on 2026-08-19. `validation._same_place` still called itself a
+  stopgap "blocked on a provider choice" -- the maps tools shipped and `transfers.py`
+  measures.
+
+Also removed the unused `database_url` / `redis_url` placeholders from `Settings`:
+nothing read them, and Phase 4 will add what it actually needs.
+
+454 backend tests, the MCP protocol test, and ruff check + format all green.
+
+## User experience: preference control, honest sharing and map recovery (2026-09-06)
+
+- Preferences: authenticated `GET /preferences` lists all 50 possible rows, not recall's 20.
+  `DELETE /preferences/{preference_key}` deletes one exact text for the authenticated owner;
+  its SHA-256 id keeps text out of URL logs. No schema migration, no caller-supplied user id.
+  The HTTP store binding joins `conftest.py` isolation. Database failures return retryable 503s.
+- The profile dialog captures its session token, so an in-flight deletion cannot switch owners
+  when the app signs into another account. It preserves rows on errors and asks before deletion.
+  Deletion affects later recall; it does not rewrite existing or in-flight itineraries.
+- Sharing now says saved/shared request and explains that edits may carry the latest instruction.
+  Old rows cannot reconstruct a missing original request reliably. Preview and published text
+  still match exactly, with inclusion off by default. Verified the revised-trip preview on device.
+- Maps: load each URL once per WebView, destroy it on release, bound stalled documents, and wait
+  for the page's tiles-ready signal. Place the static fallback above the invisible browser so it
+  gets gestures. Failed images offer retry; pan bounds account for the fitted image. Zoom buttons
+  and reset supplement pinch/double-tap. The image HTTP call has a 20-second total timeout.
+- Compose instrumentation runs isolated content, fake preferences and fake images; no real stores
+  or external requests. Verified confirmation/cancel, errors, image retry, pinch, pixel-changing
+  pan and reset on API 27. JVM tests verify token binding, failure/cancellation and DTO decoding.
+- Launcher investigation remains open. Native resource rendering produced the correct mark, while
+  `PackageManager.getActivityIcon` returned the default bitmap. Ordinary XML, PNG-only resources,
+  removing version qualifiers, renaming the resource and version 3 all left it unchanged. The
+  attempted icon changes were reverted; this evidence does not establish a specific vendor bug.
+  Further comparison needs another device. The phone's launcher/theme data was not touched.
+- Debug 0.1.2 was installed in place; the signed-in account, two saved trips and transcript survived.
+  A local backup and diagnostic screenshots are under `android/app/build/ux-check/` (gitignored).
+- No planner prompt, tool dispatch or generation logic changed; no paid LLM eval was run.
+- OpenAI `gpt-5.6-luna` rejects `max_tokens` on Chat Completions and requires
+  `max_completion_tokens`. Its streamed function calls also require
+  `reasoning_effort="none"`; a 152-token probe confirmed the tool-call stream works with both.
+  `stream_turn` now sends these parameters and its offline regression test asserts them.
+
+## Interactive map diagnosis (2026-09-27)
+
+- App WebView remains 138. Its Maps bootstrap fetch fails with `net::ERR_NAME_NOT_RESOLVED`,
+  observed through the app's own DevTools socket. Android reports no active default network.
+- USB `adb reverse` reaches the backend; it does not supply internet access for Google scripts
+  and tiles fetched by the phone. Server-fetched static maps still succeed. No evidence links
+  this failure to the quarterly Maps channel or a WebView downgrade; the external browser's
+  Chrome 62 user agent describes a different engine. No device network settings were changed.

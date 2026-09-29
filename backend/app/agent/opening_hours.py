@@ -1,14 +1,12 @@
 """Read Google's opening-hours text and decide whether a visit falls inside it.
 
 Google returns hours as the strings it shows users -- "Monday: 11:00 AM - 5:00 PM",
-"Tuesday: Closed", "Monday: Open 24 hours", and days with a break in the middle:
-"Monday: 11:00 AM - 2:00 PM, 5:00 - 9:00 PM". There is a structured form in the API too,
-but the descriptions are what the planner already receives and passing them through
-unparsed keeps one representation instead of two.
+"Tuesday: Closed", "Monday: Open 24 hours", and days with a break: "Monday: 11:00 AM -
+2:00 PM, 5:00 - 9:00 PM". The API has a structured form too, but the descriptions are what
+the planner already receives, and using them keeps one representation instead of two.
 
-**Everything here refuses rather than guesses.** A day it cannot parse returns "no
-opinion", never "closed" -- the check exists to catch a plan sending someone to a locked
-door, and inventing closures would do the opposite of that while looking rigorous.
+**Everything here refuses rather than guesses.** A day it cannot parse means "no opinion",
+never "closed": inventing closures would defeat the check while looking rigorous.
 """
 
 import re
@@ -57,10 +55,9 @@ def _minutes(value: str) -> int | None:
 def _windows(spec: str) -> list[tuple[int, int]] | None:
     """Open intervals for one day, or None when the text cannot be read.
 
-    An interval that ends before it starts has crossed midnight -- "5:00 PM - 2:00 AM"
-    -- and is extended to the end of the day rather than dropped. Visits are scheduled
-    by wall clock within a single date, so the small hours of the next morning are not
-    something this check can speak to anyway.
+    An interval ending before it starts has crossed midnight ("5:00 PM - 2:00 AM") and is
+    extended to the end of the day rather than dropped. Visits are scheduled by wall clock
+    within one date, so the next morning's small hours are outside this check anyway.
     """
     body = spec.strip()
     if not body:
@@ -80,12 +77,11 @@ def _windows(spec: str) -> list[tuple[int, int]] | None:
 
         end = _minutes(end_text)
 
-        # An opening time with no meridiem takes one from the closing time -- but not
-        # by copying it. "5:00 - 9:00 PM" is 17:00 and "11:00 - 2:00 PM" is 11:00, so
-        # copying "PM" is right once and wrong once. The reading that works for both is
-        # the latest one that still falls before closing. This has to happen before
-        # parsing rather than as a fallback, because "5:00" is valid 24-hour text on its
-        # own and would silently become a morning window that shuts nine hours early.
+        # An opening time with no meridiem borrows one from the closing time, but not by
+        # copying: "5:00 - 9:00 PM" is 17:00 and "11:00 - 2:00 PM" is 11:00, so copying
+        # "PM" is right once and wrong once. The reading that works for both is the latest
+        # one still before closing. It must happen before parsing, since "5:00" is valid
+        # 24-hour text and would otherwise become a window that shuts nine hours early.
         if end is not None and not _MERIDIEM.search(start_text) and _MERIDIEM.search(end_text):
             candidates = [
                 candidate

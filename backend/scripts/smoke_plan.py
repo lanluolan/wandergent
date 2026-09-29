@@ -1,15 +1,15 @@
 """Manual end-to-end smoke test: one real planning run against a live LLM.
 
-Deliberately outside the pytest suite -- it costs tokens and needs the network,
-whereas `uv run pytest` stays offline and free. This is the check to run after
-putting a key in `backend/.env`, and after any prompt or tool change.
+Outside the pytest suite because it costs tokens and needs the network, where
+`uv run pytest` stays offline and free. Run it after putting a key in `backend/.env`, and
+after any prompt or tool change.
 
     cd backend
     uv run python -m scripts.smoke_plan
-    uv run python -m scripts.smoke_plan "3 days in Seoul, budget 2000, I like museums, no hiking"
+    uv run python -m scripts.smoke_plan "3 days in Los Angeles, budget 900 USD, no hiking"
 
-It prints which tools were called and whether they degraded, so a plan that came
-out thin can be traced to a failing tool rather than guessed at.
+It prints which tools were called and whether they degraded, so a thin plan can be traced
+to a failing tool rather than guessed at.
 """
 
 import asyncio
@@ -86,8 +86,8 @@ async def main() -> int:
         if not value
     ]
     if missing:
-        # These run the orchestrator directly, so they cannot borrow a caller's headers
-        # the way the HTTP endpoints do -- a developer box needs its own provider named.
+        # Only the key has no default, but a box that blanked either of the others in
+        # .env should hear about all three at once rather than one rerun at a time.
         print(f"{', '.join(missing)} not set. Put them in backend/.env, then rerun.")
         return 1
 

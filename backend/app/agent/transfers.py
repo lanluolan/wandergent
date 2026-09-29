@@ -1,39 +1,23 @@
 """Confirm suspected transfer problems against real travel times.
 
-The constraint layer decides "can you get from here to there in the gap" from the
-location *strings*, because until the maps tools landed there was nothing better. That
-rule is deliberately forgiving -- a live run once produced six false positives, every
-one "visit X" followed by "eat near X" -- and forgiving means it also misses real ones.
+The heuristic **proposes**, Google **disposes**. `validation._same_place` judges hops from
+location strings and is deliberately forgiving -- a live run once produced six false
+positives, every one "visit X" followed by "eat near X" -- so forgiving that it also
+misses real ones. Only pairs it already flagged get a real lookup here, which costs a
+handful of Routes calls per plan rather than one per activity pair.
 
-This module is the second half of that answer: the heuristic **proposes**, Google
-**disposes**. Only pairs the heuristic already flagged get a real lookup, so the cost is
-a handful of Routes calls per plan rather than one per activity pair.
+**All three modes, shortest wins.** The question is "is this schedule *possible*", not
+"how will they travel": a hop that is a long walk and a short train ride is a schedule
+with a train in it. The comparison is only fair because driving is measured
+`TRAFFIC_AWARE` -- free-flow times made the car look best everywhere. An empty answer
+from one mode means "not that way here", never an error, and the others carry the verdict.
 
-**All three modes, shortest wins.** The question this layer asks is "is this schedule
-*possible*", not "how will they travel", so a hop that is a long walk and a short train
-ride is not infeasible -- it is a schedule with a train in it. Walking, transit and
-driving are measured together and the quickest stands.
+**Measured at the hour on the plan**, resolved to the destination's local clock via one
+Time Zone lookup per report. A hop can measure 13 minutes by car at 05:00 and 29 at 17:30,
+so a fixed reference hour clears hops nobody could make.
 
-Transit earns its place by being the honest number where driving is not: a tourist
-without a car takes the train, and in a dense city at a real hour the train often beats
-the car anyway. That comparison is only fair because driving is now measured
-`TRAFFIC_AWARE`; free-flow drive times made the car look best everywhere and quietly
-turned every measurement optimistic.
-
-Transit coverage is regional and its absence is **not** an error -- Japan returns no
-transit route at all. An empty answer from any one mode simply means "not that way
-here", and the others carry the verdict.
-
-**Measured at the hour on the plan.** Every lookup is priced for the moment the
-traveller actually sets off, resolved to the destination's local clock via one Time Zone
-lookup per report. This is not a detail: the Art Institute to Wrigley Field measures 13
-minutes by car at 05:00 and 29 at 17:30, so the previous fixed 11:00 UTC reference --
-dawn in Chicago -- was clearing hops nobody could make. Anything measured off-peak
-launders the model's optimism instead of catching it.
-
-Everything degrades. No key, no timezone, a timeout, an unroutable pair -- the original
-heuristic violation stands unchanged, which is exactly the behaviour from before this
-existed.
+Everything degrades: no key, no timezone, a timeout, an unroutable pair -- the original
+heuristic violation stands unchanged.
 """
 
 import asyncio
@@ -64,10 +48,9 @@ async def _measure(
 ) -> tuple[int, str] | None:
     """Shortest sensible travel time in minutes and the mode it assumes.
 
-    All three modes are asked at once rather than transit-then-fallback in sequence: the
-    fallback is needed often enough (every Japanese city) that a second round trip would
-    be the common case, not the exception, and three concurrent lookups cost the same
-    wall-clock as one.
+    All three at once rather than transit-then-fallback in sequence: the fallback is
+    needed often enough that a second round trip would be the common case, and three
+    concurrent lookups cost the same wall-clock as one.
     """
     transit, walk, drive = await asyncio.gather(
         get_travel_time(origin, destination, "TRANSIT", depart_at=depart_at),
@@ -88,12 +71,10 @@ async def _measure(
 def _departure_instant(day: date | None, minute: int | None, offset: timedelta) -> datetime | None:
     """The trip's own departure moment, expressed in UTC and pushed into the future.
 
-    Why the push: the plan is normally for a future date, but not always -- an eval case,
-    a re-run of a saved plan, or a trip whose first days have passed all produce dates
-    Google will not answer for. Sliding forward in **whole weeks** keeps both things the
-    measurement actually depends on: the weekday (a Sunday timetable is not a Tuesday
-    one) and the local clock time. Sliding by days would silently turn a Tuesday rush
-    hour into a Sunday morning, which is the very error this function exists to remove.
+    An eval case, a re-run of a saved plan, or a trip whose first days have passed all
+    produce dates Google will not answer for. Sliding forward in **whole weeks** keeps
+    what the measurement depends on -- the weekday and the local clock time. Sliding by
+    days would turn a Tuesday rush hour into a Sunday morning.
     """
     if day is None or minute is None:
         return None
@@ -118,9 +99,9 @@ async def confirm_transfers(report: ValidationReport) -> ValidationReport:
     if not candidates or not settings.google_maps_api_key:
         return report
 
-    # One offset for the whole report: every hop in a plan is in the same city, and the
-    # lookup costs two calls. Failure is not fatal -- `_measure` then omits the departure
-    # time and gets the generic future weekday, which is what it always used to get.
+    # One offset for the whole report: every hop is in the same city and the lookup costs
+    # two calls. Failure is not fatal -- `_measure` then omits the departure time and
+    # gets the generic future weekday.
     offset = await local_utc_offset(
         candidates[0].origin or "", next((v.day for v in candidates if v.day), None)
     )

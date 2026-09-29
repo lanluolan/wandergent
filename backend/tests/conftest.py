@@ -1,15 +1,18 @@
 """Shared fixtures.
 
-The rate limiter is process-wide and its counters outlive a single test, so without this
-the suite would start failing in whatever order happens to exhaust a limit first -- and it
-would fail in a *different* test than the one that caused it. Resetting between tests
-keeps each one independent, which is the property that makes a failure mean something.
+The rate limiter is process-wide and its counters outlive a single test, so without a reset
+the suite fails in whatever order happens to exhaust a limit first -- and fails in a
+*different* test than the one that caused it.
 
-The LLM settings are pinned for the same reason, one level out: `Settings` reads
-`backend/.env`, so without this the suite's results depend on what a particular developer
-happens to have configured. That was not hypothetical -- the planning tests passed only
-because a key was present, and emptying `.env` (now the normal deployment) turned 35 of
-them red at once. A suite documented as offline must not be able to tell.
+The databases are redirected for a blunter reason: otherwise a test going through the HTTP
+layer writes into whatever `.env` points at, which is the developer's own running app.
+`test_publishing_is_capped_per_account` left ten trips in the real community feed on every
+run, 170 of them before anyone looked.
+
+The LLM settings are pinned one level out: `Settings` reads `backend/.env`, so without this
+the results depend on what a given developer has configured. The planning tests passed only
+because a key was present, and emptying `.env` turned 35 of them red at once. A suite
+documented as offline must not be able to tell.
 """
 
 import pytest
@@ -37,6 +40,37 @@ def _pinned_llm_settings(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "sk-test-not-a-real-key")
     monkeypatch.setattr(settings, "openai_base_url", "https://api.example.test/v1")
     monkeypatch.setattr(settings, "openai_model", "test-model")
-    # Empty means the built-in provider list, which is what the tests assert against.
-    # Left unpinned, an operator's narrowing in `.env` silently changes what they mean.
-    monkeypatch.setattr(settings, "llm_byok_base_urls", "")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_databases(tmp_path, monkeypatch):
+    """Point every store at this test's own directory, never at the real files.
+
+    The three stores are module-level singletons, and the modules using them bound the
+    instance at import -- so each must be replaced where it was imported *to*, not only
+    where it was created. Missing a binding is invisible: the test passes and the write
+    lands in the developer's database.
+
+    Construction is free (SQLite opens lazily), so this costs nothing on tests that never
+    touch a store. A test wanting its own still builds one and patches over this.
+    """
+    from app import auth, community, main, memory
+    from app.agent import orchestrator
+    from app.auth.store import AuthStore
+    from app.community.store import CommunityStore
+    from app.memory.store import PreferenceStore
+    from app.tools import memory as memory_tool
+
+    accounts = AuthStore(tmp_path / "auth.db")
+    monkeypatch.setattr(auth, "store", accounts)
+    monkeypatch.setattr(main, "auth_store", accounts)
+
+    shares = CommunityStore(tmp_path / "community.db")
+    monkeypatch.setattr(community, "store", shares)
+    monkeypatch.setattr(main, "community", shares)
+
+    preferences = PreferenceStore(tmp_path / "memory.db")
+    monkeypatch.setattr(memory, "store", preferences)
+    monkeypatch.setattr(main, "memory_store", preferences)
+    monkeypatch.setattr(orchestrator, "memory_store", preferences)
+    monkeypatch.setattr(memory_tool, "default_store", preferences)

@@ -1,12 +1,11 @@
 """Itinerary data model.
 
-One model serves three consumers: it is what the LLM must emit, what the API hands
-to the Android client, and what the Phase 3 constraint-validation layer will check.
+One model serves three consumers: what the LLM must emit, what the API hands the Android
+client, and what the constraint layer checks.
 
-Times are plain "HH:MM" strings because they are wall-clock local times, not
-instants. Costs are never taken from the model's own arithmetic -- day and trip
-totals are computed from the activities, so the LLM cannot claim a plan fits the
-budget by mis-adding.
+Times are plain "HH:MM" strings because they are wall-clock local times, not instants.
+Costs never come from the model's arithmetic -- day and trip totals are computed from the
+activities, so it cannot claim a plan fits the budget by mis-adding.
 """
 
 import json
@@ -114,7 +113,10 @@ class Itinerary(BaseModel):
     start_date: date
     end_date: date
     travelers: int = Field(default=1, ge=1)
-    currency: str = Field(default="CNY")
+    # ISO 4217 code every cost here is estimated in. A fallback only: a request naming a
+    # currency puts it in the prompt, and one that does not lets the model pick the
+    # destination's. USD to match the demo destinations and the Android default.
+    currency: str = Field(default="USD")
     budget: float | None = Field(
         default=None, ge=0, description="User's stated budget for the whole trip, if any."
     )
@@ -136,11 +138,10 @@ class Itinerary(BaseModel):
         return self
 
 
-# JSON Schema keywords that describe the schema to a human rather than telling a model
-# what to produce. `title` is the humanised field name, which the key already says;
-# `default` never applies because the model is generating, not filling gaps.
-# `description` is deliberately **kept**: it carries real constraints ("HH:MM,
-# 24-hour"), and losing those would trade prompt tokens for repair rounds.
+# Keywords that describe the schema to a human rather than telling a model what to
+# produce: `title` repeats the key, and `default` never applies to generation.
+# `description` is **kept** -- it carries real constraints ("HH:MM, 24-hour"), and losing
+# those trades prompt tokens for repair rounds.
 _DROPPED_SCHEMA_KEYS = frozenset({"title", "default"})
 
 # Maps whose keys are names from *our* model, not schema keywords.
@@ -150,11 +151,10 @@ _NAME_KEYED = frozenset({"properties", "$defs"})
 def _prune(node: Any, inside_name_map: bool = False) -> Any:
     """Strip schema metadata, structurally.
 
-    The subtlety that makes this worth a function: `title` is both a JSON Schema
-    keyword *and* a field on Activity. Dropping the key by name everywhere silently
-    deletes `title` from the activity properties while leaving it in `required` -- a
-    schema that asks for a field it never describes. So metadata is only dropped where
-    the key is a schema keyword, never inside a `properties` or `$defs` map.
+    `title` is both a JSON Schema keyword *and* a field on Activity, so dropping it by
+    name everywhere deletes `title` from the activity properties while leaving it in
+    `required` -- a schema asking for a field it never describes. Metadata is therefore
+    dropped only where the key is a schema keyword, never inside `properties` or `$defs`.
     """
     if isinstance(node, dict):
         if inside_name_map:
@@ -172,9 +172,8 @@ def _prune(node: Any, inside_name_map: bool = False) -> Any:
 def itinerary_schema_json() -> str:
     """The itinerary schema as it goes into the prompt: pruned and minified.
 
-    This string ships on every LLM call in a run, so its size is multiplied by the
-    number of calls. Pruning and minifying cuts it ~28% with no loss of information
-    the model needs.
+    Ships on every LLM call in a run, so its size is multiplied by the call count.
+    Pruning and minifying cuts it ~28% with no loss the model notices.
     """
     return json.dumps(
         _prune(Itinerary.model_json_schema()),

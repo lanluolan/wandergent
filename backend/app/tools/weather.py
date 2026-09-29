@@ -1,13 +1,11 @@
 """Weather tool, backed by Open-Meteo.
 
-Open-Meteo needs no API key and resolves Chinese city names, so Phase 1 runs end to
-end without any signup. Two upstream calls: geocoding (city name -> coordinates),
-then the daily forecast.
+No API key, so the whole plan runs end to end without a signup. Two upstream calls:
+geocoding (city name -> coordinates), then the daily forecast.
 
-Open-Meteo only publishes ~16 days of forecast. A trip planned further out is the
-normal case, not an error, so an out-of-range request comes back as a degraded
-result with an explanation the planner can act on ("no forecast, use seasonal
-norms") rather than as an exception.
+Open-Meteo publishes ~16 days. A trip planned further out is normal, not an error, so an
+out-of-range request degrades to an explanation the planner can act on ("no forecast, use
+seasonal norms") rather than an exception.
 """
 
 import logging
@@ -31,16 +29,17 @@ logger = logging.getLogger(__name__)
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-# Open-Meteo serves 16 days on the free forecast endpoint, counted *inclusive of today*,
-# so the last date it answers for is today + 15. Asking for today + 16 is a 400, not an
-# empty result -- which is exactly how this was wrong before: the horizon was computed as
-# `today + 16`, so the one date upstream refuses was the one date the guard let through.
-# The old test picked `horizon + 5` and never touched the boundary.
+# 16 days on the free endpoint, counted *inclusive of today*, so the last date answered
+# for is today + 15. Asking for today + 16 is a 400, not an empty result -- computing the
+# horizon as `today + 16` lets through exactly the one date upstream refuses.
 FORECAST_DAYS = 16
 LAST_FORECAST_OFFSET = FORECAST_DAYS - 1
 
 # Guard against an LLM asking for a whole season in one call.
 MAX_REQUESTED_DAYS = 16
+
+# The language place names resolve in, matching the rest of the product.
+DEFAULT_LANGUAGE = "en"
 
 DAILY_FIELDS = (
     "weather_code",
@@ -110,10 +109,9 @@ class _Window(NamedTuple):
 class WeatherForecast(ToolOutcome):
     """Weather tool result. `days` may be empty even when `ok` is True.
 
-    `note` carries what the planner needs to know about *missing* days without calling
-    the lookup a failure -- no forecast exists this far out, so there is nothing to
-    retry and nothing went wrong. It is serialised into the tool reply, so the model
-    reads it and can fall back to seasonal norms rather than inventing a forecast.
+    `note` says what is missing without calling the lookup a failure: no forecast exists
+    this far out, so there is nothing to retry. It is serialised into the tool reply, so
+    the model reads it and falls back to seasonal norms rather than inventing weather.
     """
 
     note: str | None = None
@@ -227,11 +225,10 @@ def _to_daily_forecasts(daily: dict) -> list[DailyForecast]:
 def _clamp_range(start: date, end: date, today: date) -> _Window:
     """Clip a requested range to the days Open-Meteo actually answers for.
 
-    Distinguishes two things the caller must treat differently. A range in the past is a
-    mistake in the request -- there is no forecast backwards and the model should fix the
-    dates. A range beyond the horizon is the *normal* case for a trip planned a month out:
-    nothing is wrong, the data simply does not exist yet, so it comes back as a note rather
-    than an error and the plan falls back to seasonal norms.
+    Two cases the caller must treat differently. A range in the past is a mistake in the
+    request: the model should fix the dates. A range beyond the horizon is *normal* for a
+    trip planned a month out -- the data does not exist yet, so it comes back as a note
+    and the plan falls back to seasonal norms.
     """
     horizon = today + timedelta(days=LAST_FORECAST_OFFSET)
     if end < today:
@@ -258,8 +255,7 @@ def _clamp_range(start: date, end: date, today: date) -> _Window:
 
     note = None
     if end > clamped_end:
-        # Said explicitly, because a partial answer is the case most likely to be read as
-        # a whole one: the trip runs past the horizon and the later days have no forecast.
+        # Said explicitly: a partial answer is the one most likely to be read as a whole.
         note = (
             f"forecast covers {clamped_start.isoformat()} to {clamped_end.isoformat()} only; "
             f"later days of the trip are beyond the {FORECAST_DAYS}-day window, so use "
@@ -274,15 +270,14 @@ async def get_weather_forecast(
     end_date: str | date,
     *,
     client: httpx.AsyncClient | None = None,
-    language: str = "zh",
+    language: str = DEFAULT_LANGUAGE,
     today: date | None = None,
 ) -> WeatherForecast:
     """Look up the daily forecast for `city` between the two dates.
 
-    Never raises for an upstream problem: a timeout, an HTTP error or an unknown city
-    all come back as `ok=False` with a reason. Dates beyond the forecast window are not
-    a problem at all -- they come back `ok=True` with no days and a note.
-    `client` is injectable so tests can run without touching the network.
+    Never raises for an upstream problem: a timeout, an HTTP error or an unknown city all
+    come back as `ok=False` with a reason. Dates beyond the window are not a problem at
+    all -- `ok=True`, no days, and a note. `client` is injectable for tests.
     """
     if client is not None:
         return await _forecast(client, city, start_date, end_date, language, today)
@@ -322,9 +317,8 @@ async def _forecast(
         # Every clamp error is a malformed request -- the dates cannot be answered for.
         return WeatherForecast(ok=False, city=city, error=window.error, code=BAD_REQUEST)
     if window.start is None or window.end is None:
-        # Not a failure: a trip planned a month out simply has no forecast yet. Reporting
-        # it as one put "weather service unavailable" plus a raw upstream URL on the
-        # traveller's screen for the most ordinary request this product takes.
+        # Not a failure: a trip a month out has no forecast yet. Reporting it as one put
+        # "weather service unavailable" and a raw upstream URL on the traveller's screen.
         return WeatherForecast(ok=True, city=city, note=window.note)
     start, end = window.start, window.end
 

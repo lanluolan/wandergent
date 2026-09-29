@@ -10,6 +10,7 @@ Costs a handful of requests. The key is never printed.
 """
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -36,19 +37,26 @@ def _headers(field_mask: str) -> dict[str, str]:
     return {"X-Goog-Api-Key": KEY, "X-Goog-FieldMask": field_mask}
 
 
+def _soon() -> str:
+    """A departure time the Routes API will accept: comfortably in the future."""
+    moment = datetime.now(UTC) + timedelta(days=1)
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 async def geocoding(client: httpx.AsyncClient) -> bool:
-    body = (await client.get(GEOCODE_URL, params={"address": "Boston, Japan", "key": KEY})).json()
+    address = "Boston, MA"
+    body = (await client.get(GEOCODE_URL, params={"address": address, "key": KEY})).json()
     if body.get("status") != "OK":
         return report("Geocoding API", False, f"{body.get('status')}: {body.get('error_message')}")
     point = body["results"][0]["geometry"]["location"]
-    return report("Geocoding API", True, f"Boston -> {point['lat']:.4f},{point['lng']:.4f}")
+    return report("Geocoding API", True, f"{address} -> {point['lat']:.4f},{point['lng']:.4f}")
 
 
 async def places(client: httpx.AsyncClient) -> bool:
     response = await client.post(
         PLACES_SEARCH_URL,
         headers=_headers(PLACES_FIELD_MASK),
-        json={"textQuery": "kushikatsu restaurant in Millennium Park Chicago", "maxResultCount": 3},
+        json={"textQuery": "deep dish pizza near Millennium Park Chicago", "maxResultCount": 3},
     )
     if response.status_code != 200:
         return report(
@@ -62,23 +70,33 @@ async def places(client: httpx.AsyncClient) -> bool:
 
 
 async def routes(client: httpx.AsyncClient) -> bool:
-    """WALK and DRIVE only -- TRANSIT returns 200 with no route, see app/tools/maps.py."""
+    """All three modes the tools use.
+
+    An empty TRANSIT answer is coverage, not a fault -- it means Google has no operator
+    data there -- so it is reported without failing the probe. Transit and traffic-aware
+    driving both need a `departureTime` in the future.
+    """
     ok = True
-    for mode in ("WALK", "DRIVE"):
-        response = await client.post(
-            ROUTES_URL,
-            headers=_headers(ROUTES_FIELD_MASK),
-            json={
-                "origin": {"address": "Chicago Station, Chicago, IL"},
-                "destination": {"address": "Willis Tower, Chicago, IL"},
-                "travelMode": mode,
-            },
-        )
+    for mode in ("WALK", "DRIVE", "TRANSIT"):
+        body: dict = {
+            "origin": {"address": "Chicago Station, Chicago, IL"},
+            "destination": {"address": "Willis Tower, Chicago, IL"},
+            "travelMode": mode,
+        }
+        if mode in ("DRIVE", "TRANSIT"):
+            body["departureTime"] = _soon()
+        if mode == "DRIVE":
+            body["routingPreference"] = "TRAFFIC_AWARE"
+
+        response = await client.post(ROUTES_URL, headers=_headers(ROUTES_FIELD_MASK), json=body)
         if response.status_code != 200:
             ok = report(f"Routes API [{mode}]", False, f"HTTP {response.status_code}") and ok
             continue
         found = response.json().get("routes") or []
         if not found:
+            if mode == "TRANSIT":
+                report("Routes API [TRANSIT]", True, "reachable, no transit coverage here")
+                continue
             ok = report(f"Routes API [{mode}]", False, "200 but no route") and ok
             continue
         ok = (

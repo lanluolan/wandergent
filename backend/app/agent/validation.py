@@ -1,20 +1,17 @@
 """Hard-constraint validation for a generated itinerary.
 
-The model is good at plausible and bad at arithmetic. This layer is the part that
-makes an itinerary *feasible* rather than merely convincing: pure functions over the
-finished plan, with no LLM involved, so the answer is deterministic and testable.
+The model is good at plausible and bad at arithmetic. This layer makes an itinerary
+*feasible* rather than merely convincing: pure functions over the finished plan, no LLM,
+so the answer is deterministic and testable.
 
-Design notes:
-
-- **Codes are the contract, messages are for the model.** `code` is stable and
-  machine-readable so the client can localise it; `message` is English diagnostic text
-  that gets fed straight back to the model as repair instructions.
-- **Nothing here raises.** A violation is data, not an exception -- the orchestrator
-  decides whether to repair, warn, or ship it.
-- **Route sanity is checked in time, not distance.** Without a maps tool there are no
-  real travel times, so the rule is: consecutive activities in different places need
-  either an explicit transport activity between them or a minimum gap. That catches
-  the "teleporting tourist" plan without pretending to know the city.
+- **Codes are the contract, messages are for the model.** `code` is stable so the client
+  can localise it; `message` is English diagnostic text fed back as repair instructions.
+- **Nothing here raises.** A violation is data -- the orchestrator decides whether to
+  repair, warn, or ship it.
+- **Route sanity is checked in time, not distance.** With no real travel times, the rule
+  is that consecutive activities in different places need either an explicit transport
+  activity or a minimum gap. That catches the teleporting tourist without pretending to
+  know the city.
 """
 
 import re
@@ -30,9 +27,8 @@ from app.agent.schemas import Activity, DayPlan, Itinerary
 # is claiming teleportation.
 MIN_TRANSFER_MINUTES = 15
 
-# Days that start before dawn or end after midnight are almost always model error
-# rather than an intentionally brutal schedule. Minutes since midnight throughout,
-# because every comparison in this module is on that scale.
+# Days starting before dawn or ending after midnight are almost always model error, not a
+# deliberately brutal schedule. Minutes since midnight, like every comparison here.
 EARLIEST_START_MINUTE = 6 * 60
 LATEST_END_MINUTE = 23 * 60 + 59
 EARLIEST_START_LABEL = "06:00"
@@ -64,29 +60,22 @@ ViolationCode = Literal[
     "understated_cost",
 ]
 
-# Two kinds of finding, and they deserve different treatment.
+# Most codes describe a plan contradicting itself or the world -- two activities at once, a
+# locked door, no time to cross town. Nobody asks for those, so they block: repaired, and
+# shown as unresolved if the repair fails.
 #
-# Most codes describe a plan contradicting itself or the world: two activities at once, a
-# locked door, no time to cross town. The traveller never asked for those and cannot want
-# them, so they block -- they are repaired, and if the repair fails they are shown as
-# unresolved.
-#
-# These two are different. They are judgements about *pace*, and pace is the traveller's
-# to choose. Someone who says "pack it in" and gets a 13-hour day got what they asked
-# for; a late jazz set that ends past the sociable-hours cutoff is the reason they came.
-# Treating those as failures makes the agent argue with the person it works for, and
-# spends a repair round undoing an explicit wish. They are reported and never enforced.
+# These two are judgements about *pace*, which is the traveller's to choose. Someone who
+# says "pack it in" and gets a 13-hour day got what they asked for, and the late jazz set
+# past the cutoff is why they came. Reported, never enforced.
 ADVISORY_CODES: frozenset[str] = frozenset({"overlong_day", "unsociable_hours"})
 
-# Google's price bands, and what this layer is willing to conclude from them. A band is
-# far too coarse to price an activity -- "MODERATE" is not a number, and it means
-# something different for a Chicago steakhouse and a Lisbon cafe -- so the only inference
-# drawn is the one that needs no scale at all: a venue Google prices *at all* does not
-# cost nothing. That direction is also the dangerous one, because an activity budgeted at
-# zero is a plan claiming to fit a budget it has not accounted for.
+# A band is far too coarse to price an activity -- "MODERATE" means different things in
+# different cities -- so the only inference drawn needs no scale at all: a venue Google
+# prices *at all* does not cost nothing. That is also the dangerous direction, since an
+# activity budgeted at zero is a plan claiming to fit a budget it has not accounted for.
 #
-# FREE and UNSPECIFIED are excluded deliberately. FREE against a non-zero cost looks like
-# a contradiction and is not: a picnic in a free park still costs what the picnic costs.
+# FREE and UNSPECIFIED are excluded: FREE against a non-zero cost is not a contradiction,
+# because a picnic in a free park still costs what the picnic costs.
 PAID_PRICE_LEVELS = (
     "PRICE_LEVEL_INEXPENSIVE",
     "PRICE_LEVEL_MODERATE",
@@ -95,12 +84,9 @@ PAID_PRICE_LEVELS = (
 )
 
 # Categories where a zero is the normal way to write a real cost, so a price band proves
-# nothing: a four-night hotel is billed once and the other three nights entered at 0,
-# transport is not a venue at all, and "rest at the hotel" costs what was already paid.
-#
-# Probed 2026-08-17: Google returned no band for any Chicago hotel or museum, so today
-# this exemption is belt-and-braces rather than load-bearing -- in practice the check
-# only ever fires on food. Kept because coverage is Google's to change, not ours.
+# nothing: a four-night hotel is billed once with the other nights at 0, transport is not
+# a venue, and "rest at the hotel" costs what was already paid. Belt-and-braces today --
+# Google returns no band for hotels or museums -- but coverage is Google's to change.
 COST_EXEMPT_CATEGORIES = ("transport", "accommodation", "rest")
 
 PRICE_LEVEL_WORDS = {
@@ -129,11 +115,10 @@ HEDGE_MARKERS = (
     "任意一家",
 )
 
-# English hedges vary by article in a way the Chinese ones do not: "or similar",
-# "or a similar" and "or something similar" are one evasion wearing three coats, and a
-# substring list catches whichever spelling happens to be enumerated. Switching the app
-# to English surfaced this immediately -- "Grand Central Market or a similar food hall"
-# walked straight past a list that contained "or similar".
+# English hedges vary by article where the Chinese ones do not: "or similar", "or a
+# similar" and "or something similar" are one evasion in three spellings, and a substring
+# list only catches whichever was enumerated -- "or a similar food hall" walked straight
+# past a list containing "or similar".
 HEDGE_PATTERN = re.compile(
     r"\bor\s+(?:a|an|the|some|something)?\s*(?:similar|nearby|equivalent|another)\b"
     r"|\b(?:some|any)\s+(?:restaurant|cafe|café|hotel|place|venue|spot)\b"
@@ -171,17 +156,16 @@ class Violation(BaseModel):
     # while its own annotation is being evaluated, which fails at class definition.
     day: date | None = None
 
-    # Transfer detail, set only on `insufficient_transfer`. It exists so the finding is
-    # actionable by something other than a human reading prose: the confirm pass needs
-    # the two endpoints to ask for a real travel time, and a failing eval needs to say
-    # *which* hop was too tight rather than just naming the code three times.
+    # Transfer detail, set only on `insufficient_transfer`, so the finding is actionable
+    # without reading prose: the confirm pass needs the endpoints to measure a real travel
+    # time, and a failing eval needs to name *which* hop was too tight.
     origin: str | None = None
     destination: str | None = None
     gap_minutes: int | None = None
     needed_minutes: int | None = None
-    #: Wall-clock minutes past midnight when the traveller would set off. Carried so the
-    #: measurement can ask about the hour they will actually travel: a hop measured at
-    #: 05:00 gets empty roads and a skeleton timetable, which is not the trip.
+    #: Wall-clock minutes past midnight when the traveller sets off, so the measurement
+    #: asks about the hour they will actually travel -- 05:00 gets empty roads and a
+    #: skeleton timetable, which is not the trip.
     depart_at_minute: int | None = None
 
     @property
@@ -211,9 +195,8 @@ class ValidationReport(BaseModel):
     def as_instructions(self) -> str:
         """Render the repairable violations as instructions for the model.
 
-        Advisory findings are left out on purpose: a repair round spent talking the model
-        out of a packed day the traveller asked for is a round not spent on the locked
-        door, and it costs a full generation either way.
+        Advisory findings are left out: a repair round spent talking the model out of a
+        packed day the traveller asked for is a round not spent on the locked door.
         """
         return "\n".join(f"- {violation.message}" for violation in self.blocking)
 
@@ -253,16 +236,14 @@ PROXIMITY_MARKERS = (
     "opposite",
 )
 
-# Two Chinese place names sharing this many leading characters are almost always the
-# same area ("锦里古街" / "锦里小吃街").
+# Two CJK place names sharing this many leading characters are almost always the same
+# area, since two characters is already a meaningful root.
 SHARED_PREFIX_CHARS = 2
 
-# For Latin scripts the comparable unit is a whole word, not a character count. Two
-# leading characters is a meaningful root in Chinese and almost nothing in English:
-# "Santa Monica Pier" and "Santa Ana Zoo" share "Sa" while being an hour apart, so a
-# character-based prefix would silently declare them the same place and skip the
-# transfer check entirely. The minimum length keeps "The"/"Old"/"New" from matching
-# everything.
+# In Latin scripts the comparable unit is a whole word: "Santa Monica Pier" and "Santa Ana
+# Zoo" share "Sa" while being an hour apart, so a character prefix would declare them the
+# same place and skip the transfer check. The minimum length keeps "The"/"Old"/"New" from
+# matching everything.
 MIN_LATIN_ROOT = 4
 
 _CJK = re.compile(r"[一-鿿]")
@@ -286,14 +267,11 @@ def _place_root(value: str) -> str:
 def _same_place(first: Activity, second: Activity) -> bool:
     """Whether moving between these two needs travel time.
 
-    STOPGAP. Real travel times need the maps tool, which is blocked on a provider
-    choice. Until then this works on the location *strings*, which means it must be
-    forgiving: a live run flagged six false positives in one plan, all of the form
-    "visit X" -> "lunch near X", because the names differ while the places do not.
-
-    Deliberately biased towards false negatives. A missed transfer produces a slightly
-    optimistic schedule; a false one sends the agent off to "repair" a plan that was
-    already fine, which costs a round trip and usually makes the plan worse.
+    Works on the location *strings*, so it must be forgiving: a live run flagged six false
+    positives in one plan, all of the form "visit X" -> "lunch near X", where the names
+    differ and the place does not. Biased towards false negatives -- a missed transfer
+    gives a slightly optimistic schedule, a false one sends the agent to "repair" a plan
+    that was already fine. `transfers.py` measures whatever this proposes.
     """
     if first.location is None or second.location is None:
         # Absence of evidence, not evidence of a move.
@@ -317,10 +295,9 @@ def validate_itinerary(
 ) -> ValidationReport:
     """Check an itinerary against the hard constraints. Pure and deterministic.
 
-    `known_hours` maps a venue name to Google's opening-hours lines, gathered from the
-    `search_places` calls the run already made. It is optional because the checker must
-    keep working with no maps key and for callers that never searched -- an absent entry
-    means no opinion, never a closure.
+    `known_hours` maps a venue name to Google's opening-hours lines, from the
+    `search_places` calls the run already made. Optional, because the checker must work
+    with no maps key: an absent entry means no opinion, never a closure.
     """
     violations: list[Violation] = []
 
@@ -343,11 +320,10 @@ _Fact = TypeVar("_Fact")
 def _match_known(activity: Activity, known: dict[str, _Fact]) -> _Fact | None:
     """Whatever the run looked up about the venue this activity refers to, if anything.
 
-    Matched on containment in both directions, because the model rarely writes the
-    venue name exactly as Google returned it: "Lunch at Lou Malnati's" against
-    "Lou Malnati's Pizzeria". Deliberately requires a reasonably long name -- a
-    three-letter match would attach the wrong venue's hours, and a wrong closure is
-    worse than no check.
+    Containment in both directions, because the model rarely writes the venue name exactly
+    as Google returned it: "Lunch at Lou Malnati's" against "Lou Malnati's Pizzeria".
+    Requires a reasonably long name -- a three-letter match attaches the wrong venue's
+    hours, and a wrong closure is worse than no check.
     """
     haystack = f"{activity.title} {activity.location or ''}".lower()
     best: _Fact | None = None
@@ -364,10 +340,9 @@ def _match_known(activity: Activity, known: dict[str, _Fact]) -> _Fact | None:
 def _check_opening_hours(day: DayPlan, known_hours: dict[str, list[str]]) -> list[Violation]:
     """Nothing scheduled at a venue while it is shut.
 
-    This is the one constraint the layer could not express at all until the field mask
-    asked for hours: budget, timing and routing all pass cleanly for a plan that arrives
-    at a locked door. It reads hours the run already paid for rather than the model's
-    own account of them, so a plan cannot satisfy it by asserting.
+    Budget, timing and routing all pass cleanly for a plan that arrives at a locked door.
+    Reads the hours the run already paid for rather than the model's account of them, so
+    a plan cannot satisfy this by asserting.
     """
     if not known_hours:
         return []
@@ -403,11 +378,10 @@ def _check_opening_hours(day: DayPlan, known_hours: dict[str, list[str]]) -> lis
 def _check_price_levels(day: DayPlan, known_prices: dict[str, str]) -> list[Violation]:
     """Nothing Google charges for is budgeted at nothing.
 
-    The narrowest useful thing that can be said with a price *band*. It exists because
-    every cost in a plan is the model's invention, and the budget check downstream is
-    only as good as those inventions: a dinner entered at 0 makes an over-budget trip
-    validate cleanly. This catches the free-lunch case without pretending a band is a
-    price -- see `PAID_PRICE_LEVELS` for what is deliberately not concluded.
+    The narrowest useful thing a price *band* can say. Every cost in a plan is the model's
+    invention and the budget check is only as good as those inventions: a dinner entered
+    at 0 makes an over-budget trip validate cleanly. See `PAID_PRICE_LEVELS` for what is
+    deliberately not concluded.
     """
     if not known_prices:
         return []
@@ -437,10 +411,9 @@ def _check_price_levels(day: DayPlan, known_prices: dict[str, str]) -> list[Viol
 def _check_accommodation(itinerary: Itinerary) -> list[Violation]:
     """A trip with nights in it has to say where those nights are spent.
 
-    Two ways to satisfy this: schedule an accommodation activity, or say in the trip
-    notes that lodging is already handled. Both are fine; silence is not. A live run
-    produced a three-day plan with no hotel at all, whose breakfast entry then read
-    "the hotel or a nearby cafe" -- referring to lodging the plan never chose.
+    Two ways to satisfy it: an accommodation activity, or a note saying lodging is already
+    handled. Silence is not one. A live run produced a three-day plan with no hotel whose
+    breakfast entry read "the hotel or a nearby cafe" -- lodging the plan never chose.
     """
     if itinerary.end_date <= itinerary.start_date:
         return []

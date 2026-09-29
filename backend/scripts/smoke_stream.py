@@ -1,12 +1,11 @@
 """Manual smoke test for the streaming path, against a live model.
 
-Prints every event with the seconds elapsed since the request started, which is the
-number that matters: the whole point of Phase 2 is that something useful appears long
-before the itinerary is finished.
+Prints every event with the seconds elapsed since the request started, which is the number
+that matters: something useful has to appear long before the itinerary is finished.
 
     cd backend
     uv run python -m scripts.smoke_stream
-    uv run python -m scripts.smoke_stream "3 days in Boston, budget 60000 JPY, temples"
+    uv run python -m scripts.smoke_stream "3 days in Los Angeles, budget 900 USD, museums"
 """
 
 import asyncio
@@ -30,8 +29,8 @@ async def main() -> int:
         if not value
     ]
     if missing:
-        # These run the orchestrator directly, so they cannot borrow a caller's headers
-        # the way the HTTP endpoints do -- a developer box needs its own provider named.
+        # Only the key has no default, but a box that blanked either of the others in
+        # .env should hear about all three at once rather than one rerun at a time.
         print(f"{', '.join(missing)} not set. Put them in backend/.env, then rerun.")
         return 1
 

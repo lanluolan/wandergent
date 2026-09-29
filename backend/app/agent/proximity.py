@@ -1,17 +1,14 @@
 """Tell the model how far apart its candidate venues are, before it writes the schedule.
 
-The plan used to be written blind. `search_places` returns coordinates and the run threw
-them away, so when the model chose a start and end time for two activities it had no idea
-whether they were next door or across the city. Live result: a 14-minute walk scheduled
-with a **0-minute** gap, caught only afterwards by a Routes measurement and a repair
-round -- which costs a whole extra generation to fix something the model would not have
-written had it known.
+Without this the schedule is written blind: `search_places` returns coordinates, and a
+model choosing times with no idea whether two venues are next door or across the city
+writes a 14-minute walk into a 0-minute gap -- caught only afterwards by a Routes
+measurement and a repair round, at the cost of a whole extra generation.
 
-This is the cheap half of the answer. Straight-line distance between two known points is
-arithmetic, not an API call, so every venue the run already looked up can be described to
-the model for free. It is deliberately presented as an *estimate*: it does not know about
-rivers, one-way systems or the fact that the direct route is up a cliff. `get_travel_time`
-remains the authority, and `transfers.py` still confirms the schedule afterwards.
+The cheap half of the answer: straight-line distance between two known points is
+arithmetic, not an API call, so every venue the run looked up can be described for free.
+Presented as an *estimate* -- it knows nothing of rivers, one-way systems or a direct
+route up a cliff. `get_travel_time` is the authority and `transfers.py` still confirms.
 """
 
 import math

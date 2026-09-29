@@ -15,17 +15,16 @@ Run it:
     cd backend && uv run python -m app.mcp_server          # stdio, for desktop clients
     cd backend && uv run python -m app.mcp_server --http   # streamable HTTP on :8765
 
-**Memory is deliberately not exposed here.** `remember_preference` writes to a specific
-user's store, and this surface has no authenticated user -- an MCP client could claim
-any id and read or pollute someone else's preferences. It stays behind the agent, where
-identity comes from the request. Exposing it needs the auth backend first.
+**Memory is deliberately not exposed here.** `remember_preference` writes to one user's
+store, and this surface authenticates nobody -- a client could claim any id and pollute
+someone else's preferences. It stays behind the agent, where identity comes from a token.
 """
 
 import sys
 
 from mcp.server import MCPServer
 
-from app.tools.maps import MAX_PLACES, PlacesResult, TravelTime
+from app.tools.maps import DEFAULT_LANGUAGE, MAX_PLACES, PlacesResult, TravelTime
 from app.tools.maps import get_travel_time as _get_travel_time
 from app.tools.maps import search_places as _search_places
 from app.tools.weather import FORECAST_DAYS, WeatherForecast
@@ -36,9 +35,8 @@ server = MCPServer(
     version="0.1.0",
     instructions=(
         "Travel-planning tools from the Wandergent project. The weather tool is keyless "
-        "(Open-Meteo), resolves city names in any language including Chinese, and degrades "
-        "gracefully instead of failing. The maps tools need the server to be configured with "
-        "a Google Maps key; without one they return ok=false rather than failing."
+        "(Open-Meteo) and degrades gracefully instead of failing. The maps tools need the "
+        "server configured with a Google Maps key; without one they return ok=false."
     ),
 )
 
@@ -76,9 +74,9 @@ async def get_weather_forecast(
     ),
 )
 async def search_places(
-    query: str, near: str, limit: int = 4, language: str = "zh-CN"
+    query: str, near: str, limit: int = 4, language: str = DEFAULT_LANGUAGE
 ) -> PlacesResult:
-    """What to look for plus where, e.g. ("kushikatsu restaurant", "Chicago")."""
+    """What to look for plus where, e.g. ("deep dish pizza", "Chicago")."""
     return await _search_places(query, near, limit, language)
 
 
@@ -86,13 +84,13 @@ async def search_places(
     name="get_travel_time",
     title="Real travel time",
     description=(
-        "Travel time and distance between two places. WALK or DRIVE only -- public transit "
-        "is not available from the upstream service, so it is not offered rather than "
-        "offered unreliably. Never raises."
+        "Travel time and distance between two places, by WALK, DRIVE or TRANSIT. Transit "
+        "coverage is regional: where the upstream service has no operator data the result "
+        "is ok=false with no route, so fall back to another mode. Never raises."
     ),
 )
 async def get_travel_time(origin: str, destination: str, mode: str = "WALK") -> TravelTime:
-    """Two place names or addresses, plus WALK or DRIVE."""
+    """Two place names or addresses, plus WALK, DRIVE or TRANSIT."""
     return await _get_travel_time(origin, destination, mode)
 
 

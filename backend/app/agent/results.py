@@ -11,10 +11,8 @@ from pydantic import BaseModel, Field, computed_field
 from app.agent.schemas import Itinerary
 from app.agent.validation import ValidationReport
 
-#: How a run fell short of doing everything it set out to do. Every code describes the
-#: *run*, never the plan -- what the plan gets wrong is `ValidationReport`'s job, and the
-#: two were previously mixed into one list of strings that the client had to separate by
-#: comparing sentences.
+#: How a run fell short of what it set out to do. Every code describes the *run*, never
+#: the plan -- what the plan gets wrong is `ValidationReport`'s job.
 RunWarningCode = Literal[
     # The model asked for more tool calls in one round than the budget had left, so some
     # were never made. The plan is built on fewer answers than the model wanted.
@@ -31,22 +29,17 @@ RunWarningCode = Literal[
 class RunWarning(BaseModel):
     """Something that went less than perfectly while producing this plan.
 
-    A code and its parameters rather than a sentence, for the same reason `Violation`
-    carries a code: the reader is a traveller, and `reached the 16-call tool budget;
-    skipped 3 further call(s) to search_places` is a sentence written for whoever wrote
-    the tool loop. Only the client knows who is reading and in what language, so only the
-    client can write that sentence.
-
-    `detail` is the developer rendering, kept on the wire on purpose: logs, the smoke
-    scripts and a failing eval all want the specifics, and a client that meets a code it
-    has never heard of needs something to fall back on rather than a blank line.
+    A code plus parameters rather than a sentence, for the same reason `Violation` carries
+    a code: only the client knows who is reading and in what language. `detail` is the
+    developer rendering, kept on the wire for logs, smoke scripts and as a fallback for a
+    client that meets a code it has never heard of.
     """
 
     code: RunWarningCode
-    #: English, aimed at whoever is debugging. Not traveller copy -- see the class docs.
+    #: English, aimed at whoever is debugging. Not traveller copy.
     detail: str
-    #: The ceiling that was hit, on the two codes that have one. Named so a client can
-    #: say "16" without hardcoding a number this service is free to change.
+    #: The ceiling that was hit, on the two codes that have one, so a client need not
+    #: hardcode a number this service is free to change.
     budget: int | None = None
     #: Set on `tool_calls_dropped` only: how many calls went unmade, and to which tools.
     dropped_calls: int | None = None
@@ -91,11 +84,10 @@ def no_itinerary() -> RunWarning:
 class Usage(BaseModel):
     """What one planning run cost in model calls and tokens.
 
-    Reported per run rather than per call: the interesting number is what a *request*
-    costs, and the tool loop makes the number of calls vary. `cached_prompt_tokens`
-    comes from the endpoint's prompt-cache accounting and is the headline figure for
-    the Phase 4 cost work -- the system prompt carries a ~2 KB JSON Schema on every
-    call, so how much of it is billed at the cached rate matters.
+    Per run, not per call: what a *request* costs is the interesting number, and the tool
+    loop makes the call count vary. `cached_prompt_tokens` comes from the endpoint's
+    prompt-cache accounting -- the system prompt carries a ~2 KB JSON Schema every call,
+    so how much of it is billed at the cached rate matters.
     """
 
     llm_calls: int = 0
@@ -104,9 +96,8 @@ class Usage(BaseModel):
     cached_prompt_tokens: int = 0
     reasoning_tokens: int = 0
 
-    #: Total tokens per model name. With routing on, this is what shows the split --
-    #: the same token count spread over a cheaper model is the whole point, and a
-    #: single total cannot show it.
+    #: Total tokens per model name. With routing on, only this shows the split a single
+    #: total hides.
     tokens_by_model: dict[str, int] = {}
 
     @computed_field
@@ -132,10 +123,9 @@ class Usage(BaseModel):
 class ToolCallRecord(BaseModel):
     """What the agent did, surfaced so the client can show tool progress.
 
-    `code` rather than the tool's `error`, which exists for the model and the logs and
-    quotes upstream verbatim. Sending that was how a raw Open-Meteo URL and a link to the
-    MDN page for HTTP 400 ended up on a traveller's itinerary. The codes are the stable
-    part of this contract; the sentences the client shows for them are the client's.
+    `code`, not the tool's `error`: that one is written for the model and quotes upstream
+    verbatim, which once put a raw Open-Meteo URL on a traveller's itinerary. Codes are
+    the stable part of this contract; the sentences shown for them are the client's.
     """
 
     name: str
@@ -143,8 +133,7 @@ class ToolCallRecord(BaseModel):
     ok: bool
     code: str | None = None
     #: The detailed reason, for the log line at the point of failure. `exclude` keeps it
-    #: out of every serialisation, so it cannot reach the client by being forgotten about
-    #: -- which is how it got there in the first place.
+    #: out of every serialisation, so it cannot reach the client by being forgotten.
     error: str | None = Field(default=None, exclude=True)
 
 
@@ -156,15 +145,13 @@ class PlanResult(BaseModel):
 
     #: How the run went, as codes the client renders. Deliberately disjoint from
     #: `validation`: this list says what the agent could not finish, that one says what
-    #: the plan gets wrong. They used to overlap, and every consumer paid for it -- the
-    #: Android client suppressed the duplicates by string-matching two renderings of the
-    #: same finding, which is exactly the thing a code exists to make unnecessary.
+    #: the plan gets wrong. Overlap makes clients deduplicate by string-matching.
     warnings: list[RunWarning] = []
     raw_reply: str | None = None
 
-    # Result of the hard-constraint check on the itinerary as shipped. Empty violations
-    # means it passed; a non-empty list means repair was attempted and did not fully
-    # succeed, so the client can say so rather than implying the plan is sound.
+    # Hard-constraint check on the itinerary as shipped. Empty violations means it
+    # passed; a non-empty list means repair ran and did not fully succeed, so the client
+    # can say so rather than imply the plan is sound.
     validation: ValidationReport | None = None
 
     #: What this run cost. Zero if the endpoint does not report usage.

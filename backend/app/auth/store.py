@@ -1,33 +1,25 @@
 """Server-side accounts and bearer tokens.
 
-Until now every `user_id` in this service was a *claim the client made* -- fine while the
-only client was a phone on the other end of `adb reverse`, and worthless the moment two
-people can reach the same server, because anyone could post as anyone. This module is what
-turns those claims into proof.
+This is what turns a client's `user_id` claim into proof.
 
-**Storage is SQLite via the standard library**, in a worker thread, the same as
-`memory/store.py` and `community/store.py`. Its own file, so it can move to PostgreSQL on
-its own schedule.
+**Storage is SQLite via the standard library**, in a worker thread, like `memory/store.py`
+and `community/store.py`. Its own file, so it can move to PostgreSQL on its own schedule.
 
-**Passwords: PBKDF2-HMAC-SHA256 from `hashlib`.** The Android client hashes on-device with
-a single round of SHA-256, which is adequate for a local unlock and *not* adequate for a
-server-side password store -- one fast hash is billions of guesses a second on a GPU.
-Argon2id would be better still, but it is a C extension dependency, and PBKDF2 with a real
-iteration count is what the standard library offers. That trade is the same one this
-project already made choosing `sqlite3` over SQLAlchemy.
+**Passwords: PBKDF2-HMAC-SHA256 from `hashlib`.** The client's on-device SHA-256 is fine
+for a local unlock and useless as a server-side password store -- one fast hash is billions
+of guesses a second on a GPU. Argon2id would be better but is a C extension; PBKDF2 with a
+real iteration count is what the standard library offers.
 
-**Tokens: opaque random strings, stored hashed.** Deliberately not JWT, which is what
-`docs/progress.md` sketched:
+**Tokens: opaque random strings, stored hashed.** Not JWT:
 
-- **Revocable.** Logging out deletes a row. A JWT needs a denylist table to be revocable,
-  which means carrying both the state *and* the signature verification.
+- **Revocable.** Logging out deletes a row; a JWT needs a denylist table to match.
 - **Nothing to get wrong.** No `alg: none`, no HS/RS confusion, no library.
-- JWT's one advantage -- no database lookup -- buys nothing here. One server, and every
-  request already touches SQLite.
+- JWT's advantage -- no database lookup -- buys nothing here: one server, and every request
+  already touches SQLite.
 
-The token is stored as a SHA-256 digest so a leaked database does not hand over live
-sessions. A single fast hash is right *here* and wrong for passwords: the token is 256
-bits of `secrets` output, so there is no guessing attack to slow down.
+The token is stored as a SHA-256 digest, so a leaked database hands over no live sessions.
+A single fast hash is right here and wrong for passwords: 256 bits of `secrets` output has
+no guessing attack to slow down.
 """
 
 import asyncio
@@ -88,10 +80,9 @@ CREATE TABLE IF NOT EXISTS reset_codes (
 )
 """,
     "CREATE INDEX IF NOT EXISTS reset_codes_account ON reset_codes (account_id)",
-    # A separate table rather than a `purpose` column on `reset_codes`. One table would
-    # mean every lookup had to remember to filter by purpose, and the day one forgets is
-    # the day a code mailed to prove an address also sets a password. Two tables make
-    # that mistake unrepresentable rather than merely discouraged.
+    # A separate table, not a `purpose` column on `reset_codes`: one table means every
+    # lookup must remember to filter, and the day one forgets is the day a code mailed to
+    # prove an address also sets a password.
     """
 CREATE TABLE IF NOT EXISTS verify_codes (
     code_hash  TEXT PRIMARY KEY,
@@ -121,16 +112,12 @@ VERIFY_TTL = timedelta(hours=24)
 #: read next month.
 RESET_TTL = timedelta(hours=1)
 
-#: What stops a code being guessed: its own entropy, and the endpoint's rate limit.
+#: What stops a code being guessed: ~40 bits from this alphabet, plus the per-address rate
+#: limit on `/auth/reset/confirm`. Not a per-code attempt counter -- a wrong guess hashes
+#: to no stored row, so there is nothing to charge the attempt against.
 #:
-#: Not a per-code attempt counter, which was written here first and then removed -- it
-#: cannot work. A wrong guess hashes to no stored row, so there is nothing to charge the
-#: attempt against. It would have looked like a defence and counted nothing. Eight
-#: characters from a 32-symbol alphabet is about 40 bits, and `/auth/reset/confirm` is
-#: rate limited per address.
-
 #: No 0/O or 1/I: the recipient reads this off a screen and types it into a phone, and a
-#: character pair nobody can tell apart turns a working code into a support request.
+#: pair nobody can tell apart turns a working code into a support request.
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
 
@@ -146,10 +133,8 @@ class Account(BaseModel):
     #: `Credentials.email` for why it is optional rather than required.
     email: str = ""
     #: Whether that address has been proven to belong to whoever holds this account.
-    #:
-    #: **Reset requires it.** Without that rule verification buys nothing and, worse, an
-    #: unverified address is a takeover route: register with a stranger's address by
-    #: typo or on purpose, and the stranger can reset their way into the account.
+    #: **Reset requires it** -- otherwise an unverified address is a takeover route:
+    #: register with a stranger's address, and they can reset their way in.
     email_verified: bool = False
 
 
@@ -167,10 +152,9 @@ class Credentials(BaseModel):
     #: Only read on registration; ignored on login. Blank falls back to the username.
     display_name: str = Field(default="", max_length=64)
 
-    #: Also registration-only. **Optional, and that is a deliberate trade.** Requiring it
-    #: would lock out the accounts that already exist without one, and an address nobody
-    #: verified is not proof of anything anyway. What it buys is the *possibility* of
-    #: recovery; without one, a forgotten password ends the account. The client says so.
+    #: Also registration-only, and **optional on purpose**: requiring it would lock out
+    #: accounts that already exist without one. It buys the *possibility* of recovery --
+    #: without one, a forgotten password ends the account, and the client says so.
     email: str = Field(default="", max_length=254)
 
 
@@ -225,9 +209,8 @@ class AuthStore:
     async def register(self, credentials: Credentials) -> Session:
         """Create an account and sign it in. Raises `UsernameTaken`.
 
-        Signing in immediately is deliberate: a register that leaves the client to make a
-        second call has a window where the account exists and nobody can use it, and the
-        client has to handle a half-finished state that carries no useful information.
+        Signing in immediately: leaving the client to make a second call opens a window
+        where the account exists and nobody can use it.
         """
         await self._ensure_schema()
         username = credentials.username.lower()
@@ -272,8 +255,8 @@ class AuthStore:
     async def login(self, credentials: Credentials) -> Session | None:
         """Verify a password and start a session. None means "no", without saying why.
 
-        Deliberately one answer for an unknown user and a wrong password: telling them
-        apart hands out a list of which accounts exist.
+        One answer for an unknown user and a wrong password: telling them apart hands out
+        a list of which accounts exist.
         """
         await self._ensure_schema()
         username = credentials.username.lower()
@@ -376,7 +359,7 @@ class AuthStore:
         """Issue a verification code for `email`, or None if there is nothing to verify.
 
         Takes the address explicitly rather than reading it back, so setting a new address
-        and proving it are one operation from the caller's side and cannot drift apart.
+        and proving it cannot drift apart.
         """
         await self._ensure_schema()
         address = email.strip().lower()
@@ -387,9 +370,8 @@ class AuthStore:
 
         def insert() -> None:
             with self._connect() as connection:
-                # One outstanding code per account, same reasoning as reset: someone who
-                # asks twice should find the newest works rather than discovering later
-                # which of two was meant.
+                # One outstanding code per account, same as reset: ask twice and the
+                # newest works, rather than two codes and a guess about which.
                 connection.execute("DELETE FROM verify_codes WHERE account_id = ?", (account_id,))
                 connection.execute(
                     "INSERT INTO verify_codes (code_hash, account_id, email, created_at,"
@@ -413,13 +395,12 @@ class AuthStore:
     async def complete_verification(self, account_id: str, code: str) -> bool:
         """Mark the address proven. False if the code is not this account's, or lapsed.
 
-        Scoped to the account making the request -- a code is not a bearer credential for
-        somebody else's address, and checking the code alone would make it one.
+        Scoped to the account making the request: checking the code alone would turn it
+        into a bearer credential for somebody else's address.
 
-        **The address is taken from the code, not from the account row.** Between issuing
-        and confirming, the account may have been pointed at a different address; marking
-        *that* one verified on the strength of a code mailed elsewhere is precisely the
-        takeover this feature exists to prevent.
+        **The address comes from the code, not the account row.** The account may have
+        been pointed elsewhere between issuing and confirming, and marking *that* address
+        verified on a code mailed to the old one is the takeover this feature prevents.
         """
         await self._ensure_schema()
         if not code.strip():
@@ -455,8 +436,7 @@ class AuthStore:
     async def set_email(self, account_id: str, email: str) -> bool:
         """Point an account at a new address, unverified. False if it is already taken.
 
-        Marking it unverified is the whole point: an address is only proven for as long
-        as it is the one that was proven. Changing it and keeping the flag would let
+        Marking it unverified is the point: keeping the flag across a change would let
         anyone with a session move a verified account onto an address they do not own.
         """
         await self._ensure_schema()
@@ -486,13 +466,11 @@ class AuthStore:
     async def start_reset(self, email: str) -> tuple[Account, str] | None:
         """Issue a reset code for the account at `email`, or None if there is none.
 
-        The caller must answer identically either way -- a reset endpoint that behaves
-        differently for a known address is an account-enumeration oracle wearing a
-        helpful face.
+        The caller must answer identically either way: a reset endpoint that behaves
+        differently for a known address is an account-enumeration oracle.
 
-        Any code already outstanding for the account is destroyed. Someone who asks twice
-        because the first mail was slow should find that the newest code is the one that
-        works, rather than discovering later which of two they were meant to use.
+        Any outstanding code for the account is destroyed, so someone who asks twice
+        because the first mail was slow finds the newest one works.
         """
         await self._ensure_schema()
         address = email.strip().lower()
@@ -502,9 +480,9 @@ class AuthStore:
         def query() -> tuple | None:
             with self._connect() as connection:
                 return connection.execute(
-                    # `email_verified = 1` is the load-bearing clause. An unverified
-                    # address is a takeover route: whoever really owns it could reset
-                    # their way into an account that merely typed it.
+                    # `email_verified = 1` is the load-bearing clause: whoever really owns
+                    # an unverified address could reset their way into an account that
+                    # merely typed it.
                     "SELECT id, username, display_name, created_at, email"
                     " FROM accounts WHERE email = ? AND email != '' AND email_verified = 1",
                     (address,),
@@ -550,9 +528,8 @@ class AuthStore:
     async def complete_reset(self, code: str, new_password: str) -> bool:
         """Set a new password from a reset code. False if the code is not usable.
 
-        **Every session is revoked.** If the reset happened because the account was
-        compromised, leaving the attacker's bearer token alive would make the whole
-        exercise pointless -- and that is the case the feature exists for.
+        **Every session is revoked.** A reset after a compromise -- the case this exists
+        for -- would be pointless with the attacker's bearer token still alive.
         """
         await self._ensure_schema()
         if not code.strip():
@@ -572,8 +549,8 @@ class AuthStore:
 
         account_id, expires_at = row[0], row[1]
         if datetime.fromisoformat(expires_at) <= datetime.now(UTC):
-            # Checked here, not only swept on the next request: a lapsed code must stop
-            # working the moment it lapses, whatever else has or has not run since.
+            # Checked here, not only swept later: a lapsed code stops working the moment
+            # it lapses, whatever else has run since.
             await asyncio.to_thread(self._drop_code, digest)
             return False
 

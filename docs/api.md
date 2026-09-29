@@ -36,70 +36,34 @@ fail with `CLEARTEXT communication not permitted` before any request is sent.
 
 ---
 
-## Bringing your own LLM key
+## The LLM account
 
-Both planning endpoints take the caller's LLM account as headers. **A deployment normally
-has none of its own** -- key, endpoint and model all default to empty -- so in practice all
-three headers are required; the `.env` values exist for a developer box, where evals and
-smoke scripts call the orchestrator directly. Whatever the server does have, it lends.
+The server's, from `backend/.env` (`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`).
+There is no header, body field or query parameter that supplies one per request: a caller
+cannot choose the key, the endpoint or the model.
 
-| Header | Required | Meaning |
-|---|---|---|
-| `X-LLM-Api-Key` | always | The caller's key. Sent per request; never stored server-side. |
-| `X-LLM-Model` | unless the server sets `OPENAI_MODEL` | Model name, e.g. `gpt-4o`. |
-| `X-LLM-Base-Url` | unless the server sets `OPENAI_BASE_URL` | OpenAI-compatible endpoint. |
+A bring-your-own-key path shipped briefly and was removed on 2026-08-19 -- see
+`docs/decisions.md`. Two reasons, either sufficient: a caller-named endpoint is an address
+this server is then made to call, which is SSRF, and "OpenAI-compatible" is a family of
+dialects rather than one contract, so no form field can make an arbitrary provider work.
 
-Each missing piece is its own `400` naming that piece — *"this server has no LLM endpoint
-of its own, so yours is required"*. A generic failure would send someone back to the key
-they just typed, which is the one part that was right.
-
-Headers, not body fields: a key in the body ends up in request logs and in FastAPI's
-validation-error echo, and `PlanRequest` is the schema this document publishes.
-
-**A model or endpoint without a key is `400`, not a fallback.** Silently using the
-server's key for a request that asked not to would spend the operator's money, and from
-the client it would look like a setting that never takes effect.
-
-**Every one of these is a `400`, not a `5xx`**, and every sentence is aimed at the traveller
-rather than at whoever wrote `.env` — *"Open You -> AI model and add an API key."* A `5xx`
-would tell the client to retry something retrying cannot fix.
-
-**`X-LLM-Base-Url` must be one the operator allowed.** Always permitted: the server's own
-`OPENAI_BASE_URL`, plus the well-known OpenAI-compatible hosts — OpenAI, Anthropic, Gemini,
-DeepSeek, Mistral, Groq, Together and OpenRouter. OpenRouter is on that list deliberately:
-it fronts hundreds of models behind one host, so "use any model" is true without opening
-the list. Setting `LLM_BYOK_BASE_URLS` **replaces** the defaults, which is how an operator
-narrows it. This is an allowlist because the
-address is one *the server* then calls: unchecked, it is server-side request forgery, and a
-hostname check cannot close it because DNS can resolve anywhere and can change between the
-check and the call. An unlisted endpoint is `400`.
-
-**It does not raise your rate limit.** Your key pays for tokens; the run still spends the
-server's Google Places and Routes quota, which is the expensive half. And "I brought a key"
-is a header anyone can send.
-
-**Fast-model routing is off for these runs.** `FAST_MODEL` names a model on *this server's*
-provider, so sending it to a caller's endpoint would fail the first turn of every run.
+Consequences for a client: nothing to configure, and `MAX_PLANS_PER_DAY` is the ceiling
+that bounds what any caller can spend of the operator's money -- model tokens, and the
+Google Places and Routes quota a run spends alongside them.
 
 ---
 
 ## `GET /health`
 
-Liveness check, plus what the server can lend a caller who does not send every LLM header.
-No auth, no body.
+Liveness check. No auth, no body.
 
 ```json
-{ "status": "ok", "app": "Wandergent", "llm": { "key": false, "endpoint": false, "model": false } }
+{ "status": "ok", "app": "Wandergent" }
 ```
 
-`llm` reports only *whether* each setting is non-empty, never its value — the client needs
-to know which fields it must ask the traveller for, not what they would be.
-
-The app reads this before showing its "AI model" form, because whether the model and
-endpoint are required is a fact about the server and guessing it is wrong either way: a
-deployment carrying no account needs both filled in, one pointed at a provider it simply
-has no key for does not. A client that cannot reach this treats all three as available,
-which is the permissive answer — a probe that did not arrive is not evidence.
+It answers without touching the model, the maps APIs or a database, so a healthy reply
+means the process is up and its config parsed -- not that planning works. It deliberately
+says nothing about the LLM account: anyone who can reach the port can read this.
 
 ---
 
@@ -112,7 +76,7 @@ timeout — the 10 s default cuts it off mid-flight.
 ### Request
 
 ```json
-{ "message": "3 days in Los Angeles next month, budget 900 USD, I like food and museums, no hiking" }
+{ "message": "3 days in Los Angeles next week, budget 900 USD, I like food and museums, no hiking" }
 ```
 
 | Field | Type | Rules |
@@ -384,3 +348,44 @@ other people see uses the second.
 token, so a caller cannot aim a memory write at somebody else's account -- which is what
 that field allowed while it existed. A request with no token, or a lapsed one, plans
 anonymously rather than failing.
+
+## Saved preferences
+
+`GET /preferences` requires a bearer token and returns all saved preferences for that
+account (up to 50), newest first. An empty list means none are saved; `401` means no valid
+session, `503` means the store is unavailable. Success responses use `Cache-Control: no-store`.
+
+`DELETE /preferences/{preference_key}` takes the `id` from the list and returns `204`.
+Deletion is scoped to the authenticated account and idempotent, including an unknown id.
+The id is a SHA-256 digest of the exact text, keeping preference text out of access-log URLs;
+it is not authorization. Requests never accept a user id. Storage failure returns `503`.
+Deletion affects future recall; existing itineraries and already-running plans stay unchanged.
+
+`SavedPreference`, extracted from the running app's `/openapi.json` on 2026-09-06:
+
+```json
+{
+  "properties": {
+    "id": {
+      "type": "string",
+      "title": "Id"
+    },
+    "text": {
+      "type": "string",
+      "title": "Text"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "title": "Created At"
+    }
+  },
+  "type": "object",
+  "required": [
+    "id",
+    "text",
+    "created_at"
+  ],
+  "title": "SavedPreference"
+}
+```

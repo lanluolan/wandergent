@@ -177,7 +177,7 @@ ITINERARY_JSON = json.dumps(
         "start_date": "2026-08-06",
         "end_date": "2026-08-07",
         "travelers": 2,
-        "currency": "CNY",
+        "currency": "USD",
         "budget": 3000,
         "days": [
             {

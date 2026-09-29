@@ -1,18 +1,15 @@
 """Sending mail, and working without it.
 
-Password reset needs a channel that proves someone owns the account, and that channel is
-email. But requiring a mail provider to *run* the service would mean the whole reset flow
-could not be developed or tested without one, so there are two implementations behind one
-interface: SMTP when it is configured, and the log when it is not.
+Password reset needs a channel that proves someone owns the account. Requiring a mail
+provider to *run* the service would put the whole flow out of reach in development, so
+there are two implementations behind one interface: SMTP when configured, the log when not.
 
-**Standard library `smtplib`**, no dependency. Every provider speaks SMTP, and the
-alternative -- an SDK per provider -- is a dependency and a lock-in for a feature that
-sends one kind of message.
+**Standard library `smtplib`**, no dependency: every provider speaks SMTP, and an SDK per
+provider is lock-in for a feature that sends one kind of message.
 
-**Sending never raises.** A reset request that 500s because the mail server hiccupped tells
-the caller their account is broken when it is not, and -- worse -- tells an attacker
-probing addresses something the endpoint is carefully designed not to reveal. Failures are
-logged and swallowed; the endpoint answers the same either way.
+**Sending never raises.** A reset request that 500s on a mail hiccup tells the caller their
+account is broken when it is not -- and tells an attacker probing addresses exactly what
+the endpoint is designed not to reveal. Failures are logged and swallowed.
 """
 
 import logging
@@ -32,10 +29,9 @@ class Mailer(Protocol):
 class ConsoleMailer:
     """Writes the message to the log instead of sending it.
 
-    The default, because it makes the reset flow work end to end on a laptop with no
-    account anywhere. It is also the reason the boot warning exists: a server that thinks
-    it is emailing people and is in fact printing their reset codes to stdout is a
-    security problem, not a convenience.
+    The default, so the reset flow works end to end on a laptop with no account anywhere.
+    Also why the boot warning exists: a server that believes it is emailing people while
+    printing their reset codes to stdout is a security problem.
     """
 
     def send(self, to: str, subject: str, body: str) -> None:

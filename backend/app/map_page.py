@@ -1,12 +1,11 @@
 """The interactive day map, as a self-contained HTML page.
 
-Why a web page rather than the Android Maps SDK: that SDK hard-requires Google Play
-services, which the test device does not have. The JavaScript API only needs a
-Chromium and a network, both of which a WebView has. This is the one route to a real
-pan-and-zoom map on that hardware.
+A web page rather than the Android Maps SDK, which hard-requires Play services the test
+device does not have. The JavaScript API needs only a Chromium and a network, so this is
+the one route to a real pan-and-zoom map on that hardware.
 
-**Everything here is written for an old browser on purpose.** The device's system
-WebView is Chrome 62 (2017) and cannot be updated without the Play Store, so:
+**Everything here is written for an old browser on purpose.** The device's system WebView
+is Chrome 62 (2017) and cannot be updated without the Play Store, so:
 
 - the classic `callback=` bootstrap, not `importLibrary` (which is newer and modular);
 - `google.maps.Marker`, not `AdvancedMarkerElement` (needs a Map ID and a newer API);
@@ -14,15 +13,12 @@ WebView is Chrome 62 (2017) and cannot be updated without the Play Store, so:
   and a current browser);
 - `v=quarterly`, the most conservative supported channel;
 - `crossorigin="anonymous"` on the bootstrap: Google serves the bundle with
-  `Access-Control-Allow-Origin: *`, and without this attribute the browser sanitises
-  any exception it throws down to a bare "Script error." with no source or line. With
-  it, a failure names itself -- which is the difference between "the map broke" and
-  "line N uses syntax this engine does not have";
-- plain `var`/`function` in our own script, so nothing in *our* code is the thing that
-  breaks first.
+  `Access-Control-Allow-Origin: *`, and without the attribute the browser sanitises any
+  exception down to a bare "Script error." with no source or line;
+- plain `var`/`function` in our own script, so nothing of ours breaks first.
 
-Points are geocoded server-side and embedded, so the page never calls Geocoding. That
-is what lets the key this page carries be restricted to map rendering alone.
+Points are geocoded server-side and embedded, so the page never calls Geocoding -- which
+is what lets the key it carries be restricted to map rendering alone.
 """
 
 import html
@@ -196,6 +192,7 @@ _PAGE = """<!doctype html>
     }}
 
     google.maps.event.addListenerOnce(map, "tilesloaded", function () {{
+      window.wandergentMapReady = true;
       diag("tilesloaded: the map is drawn");
     }});
     // Post-construction, because the constructor rewrites the container's inline
@@ -366,7 +363,7 @@ _PAGE = """<!doctype html>
 def day_map_page(
     points: list[GeocodedPlace],
     key: str,
-    language: str = "zh-CN",
+    language: str = "en",
     debug: bool = False,
 ) -> str:
     """Render one day's stops as an interactive map page.

@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
 #
 # Two stages: uv resolves and installs into a virtualenv, the runtime image gets only the
-# venv and the source. The builder carries uv and a package cache that the final image has
-# no use for, and an image that ships its own build tools is an image with a larger attack
-# surface for no benefit.
+# venv and the source. Shipping the build tools would enlarge the attack surface for no
+# benefit.
 
 FROM python:3.13-slim AS builder
 
@@ -64,9 +63,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
 
-# **One worker, deliberately.** Two would break two things at once: the rate limiter keeps
-# its counters in process memory, so N workers means N times every limit; and several
-# processes writing the same SQLite file contend on a lock that WAL only partly relieves.
-# Both are fixed by the same Phase 4 work -- Redis and PostgreSQL -- and until then the
-# honest configuration is a single process. See `app/ratelimit.py`.
+# **One worker, deliberately.** The rate limiter counts in process memory, so N workers
+# means N times every limit, and N processes writing one SQLite file contend on a lock WAL
+# only partly relieves. Phase 4 (Redis, PostgreSQL) fixes both. See `app/ratelimit.py`.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

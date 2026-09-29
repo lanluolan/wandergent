@@ -1,24 +1,20 @@
 """Shared itineraries: publishing a plan, browsing what others published, saving one.
 
 **Storage is SQLite via the standard library**, in a worker thread, exactly as
-`memory/store.py` does it -- same reasoning, same Phase 4 swap to PostgreSQL behind the
-same kind of seam.
+`memory/store.py` does it -- same reasoning, same Phase 4 swap to PostgreSQL.
 
-The itinerary is stored as one JSON column rather than shredded into day and activity
-tables. It is a document that is always read whole and never queried by its parts, so
-normalising it would buy nothing and would couple this schema to every change in the
-agent's models. The handful of fields the feed sorts and displays are denormalised
-alongside it, derived once at publish time, so listing thirty plans never parses thirty
-itineraries.
+The itinerary is one JSON column rather than shredded into day and activity tables: it is
+a document always read whole and never queried by its parts, so normalising it would buy
+nothing and couple this schema to every change in the agent's models. The fields the feed
+sorts and displays are denormalised alongside it at publish time, so listing thirty plans
+parses no itineraries.
 
-**Identity comes from the bearer token, never from the request** (as of 2026-08-17;
-before that it was a claim the client made, and anyone could post as anyone). `author_id`
-here is always an account id the server resolved -- see `app/auth/`. `PublishRequest`
-carries no author field at all, which is what makes that true rather than merely intended.
+**Identity comes from the bearer token, never from the request.** `author_id` is always an
+account id the server resolved (see `app/auth/`), and `PublishRequest` carries no author
+field at all -- which is what makes that true rather than merely intended.
 
-**There is still no moderation of any kind**, and no rate limiting: an account can be
-registered for free and used to post immediately. Authentication fixes impersonation and
-nothing else.
+**There is no moderation of any kind.** Rate limits and the per-author cap bound the
+volume; nothing inspects the content.
 """
 
 import asyncio
@@ -66,7 +62,7 @@ CREATE TABLE IF NOT EXISTS shared_plans (
 )
 """,
     # (plan_id, user_id) as the key makes saving twice a no-op at the database level
-    # rather than a check-then-insert race, the same trick the preference table uses.
+    # rather than a check-then-insert race, like the preference table.
     """
 CREATE TABLE IF NOT EXISTS plan_saves (
     plan_id  TEXT NOT NULL,
@@ -147,10 +143,9 @@ class SharedPlan(SharedPlanSummary):
 class Feed(BaseModel):
     """One page of the feed.
 
-    An envelope rather than a bare list because a page has to carry where it *ends*.
-    Without that the client has only "how many did I skip", which is offset paging -- and
-    offset paging on a feed that grows at the top shows duplicates and skips items every
-    time somebody posts while you are reading.
+    An envelope rather than a bare list because a page must carry where it *ends*. The
+    alternative is offset paging, which on a feed that grows at the top shows duplicates
+    and skips items every time somebody posts mid-read.
     """
 
     items: list[SharedPlanSummary] = []
@@ -161,11 +156,10 @@ class Feed(BaseModel):
 class PublishRequest(BaseModel):
     """What the client sends to share a plan.
 
-    Two kinds of field are absent on purpose. The summary fields (destination, dates,
-    totals) are derived from the itinerary at publish time, so a caller cannot advertise a
-    trip as somewhere it is not. And there is **no author field at all** -- the author is
-    whoever the bearer token says it is. While `author_id` was in this model, every check
-    on it was a formality.
+    Two kinds of field are absent on purpose. Summary fields (destination, dates, totals)
+    are derived from the itinerary at publish time, so a caller cannot advertise a trip as
+    somewhere it is not. And there is **no author field** -- the author is whoever the
+    bearer token says, and while `author_id` was here every check on it was a formality.
     """
 
     request: str = Field(default="", max_length=2000)
@@ -290,9 +284,8 @@ class CommunityStore:
             where.append("(s.created_at < ? OR (s.created_at = ? AND s.id < ?))")
             params += [position[0], position[0], position[1]]
         if destination.strip():
-            # Substring, case-insensitive for ASCII via SQLite's default LIKE. Matching
-            # the destination only, not the note or the request: the note is the author's
-            # prose and the request may not be published at all.
+            # Substring, case-insensitive for ASCII via SQLite's default LIKE. Destination
+            # only: the note is the author's prose and the request may not be published.
             where.append("s.destination LIKE ? ESCAPE '!'")
             params.append(f"%{_escape_like(destination.strip())}%")
 
@@ -333,8 +326,8 @@ class CommunityStore:
         try:
             itinerary = Itinerary.model_validate_json(row[14])
         except ValueError:
-            # A stored plan that no longer parses means the schema moved under it, not
-            # that the caller did anything wrong. Hiding one row beats failing the read.
+            # The schema moved under a stored plan; the caller did nothing wrong. Hiding
+            # one row beats failing the read.
             logger.warning("shared plan %s no longer parses against the current schema", plan_id)
             return None
         return SharedPlan(**_summary(row, viewer_id).model_dump(), itinerary=itinerary)
@@ -342,9 +335,9 @@ class CommunityStore:
     async def set_saved(self, plan_id: str, user_id: str, saved: bool) -> tuple[bool, int] | None:
         """Save or unsave, returning (saved, save_count). None if the plan is gone.
 
-        Idempotent both ways: saving twice is one save, and unsaving something never
-        saved is not an error. The client is a phone with a flaky connection, and a
-        retry must not double-count.
+        Idempotent both ways: saving twice is one save, unsaving what was never saved is
+        not an error. The client is a phone with a flaky connection, and a retry must not
+        double-count.
         """
         await self._ensure_schema()
 

@@ -72,5 +72,6 @@ async def test_every_turn_asks_for_room_to_finish() -> None:
 
     await plan_trip("2 days in Chicago", client=llm, model="test-model", today=TODAY)
 
-    assert llm.requests[0]["max_tokens"] == settings.llm_max_output_tokens
+    assert llm.requests[0]["max_completion_tokens"] == settings.llm_max_output_tokens
+    assert llm.requests[0]["reasoning_effort"] == "none"
     assert settings.llm_max_output_tokens >= 8192

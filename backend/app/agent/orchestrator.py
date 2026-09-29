@@ -1,10 +1,7 @@
 """Planning orchestration as a LangGraph state graph.
 
-Phase 1 ran this as a hand-written loop, which was the right call while the shape was
-still unknown. It stopped being the right call once Phase 3 added constraint repair:
-the run now has **two cycles** -- gather/tools, and validate/repair -- and expressing
-those as nested loops with break conditions buries the control flow in the middle of
-the code that also does the work.
+A run has **two cycles** -- gather/tools and validate/repair -- which as nested loops with
+break conditions would bury the control flow inside the code doing the work:
 
     START -> gather -> (tool calls?) -> run_tools -> gather
                     -> parse -> (parsed?) -> validate
@@ -14,12 +11,11 @@ the code that also does the work.
                       -> finish
 
 LangGraph only, not the LangChain stack: it brings `langchain-core` for base types and
-nothing else. The prompts stay here, in plain sight, which was the whole reason for
-avoiding the higher-level abstractions in the first place.
+nothing else. The prompts stay here, in plain sight -- the whole reason for avoiding the
+higher-level abstractions.
 
-**Events are unchanged.** Nodes emit through LangGraph's custom stream writer and
-`stream_plan` forwards them, so the SSE contract and the Android client see exactly
-the same sequence as before the refactor. Every pre-existing test passes untouched.
+Nodes emit through LangGraph's custom stream writer and `stream_plan` forwards them, so
+the SSE contract is independent of the graph's shape.
 """
 
 import asyncio
@@ -88,20 +84,15 @@ __all__ = [
 # third try either; failing loudly beats burning tokens.
 MAX_EMIT_ATTEMPTS = 2
 
-# Rounds are not the whole story: one round can carry any number of tool calls, so a
-# four-round cap bounds the *turns* and nothing else. A confused model asking for
-# fourteen searches at once stays inside the round budget while spending the latency and
-# the money of a run three times the size. This is the other half of the cap.
-#
-# Sized off what a genuinely thorough run looks like: weather plus a handful of place
-# searches plus a few route lookups, per day, is comfortably under this. Hitting it means
-# something has gone wrong, not that the trip was complicated.
+# The other half of the cap: a round carries any number of calls, so the round budget
+# bounds turns and nothing else -- fourteen searches at once stays inside it while costing
+# a run three times the size. Sized off a thorough run (weather, a handful of searches, a
+# few routes), so hitting it means something went wrong, not that the trip was hard.
 MAX_TOOL_CALLS = 16
 
-# What to tell the model when the round budget is about to run out. Without it the tool
-# loop simply stops answering and the model is asked for an itinerary mid-research --
-# observed live, twice, ending in a run that returned no plan at all. Saying so plainly
-# turns "it stopped talking to me" into a normal instruction it can follow.
+# What to tell the model when the round budget is about to run out. Without it the loop
+# just stops answering and the model is asked for an itinerary mid-research -- observed
+# live twice, both times returning no plan at all.
 LAST_ROUND_NOTICE = (
     "This is your last round of tool calls. Ask for anything still genuinely missing "
     "now, then write the complete itinerary from what you have. Do not wait for more "
@@ -228,9 +219,9 @@ was already fine -- do not rewrite the whole trip."""
 class PlanState(TypedDict, total=False):
     """Everything one planning run carries between nodes.
 
-    The LLM client and model live in here rather than in a context schema because
-    there is no checkpointer: nothing is serialised, so a live client is safe to hold,
-    and keeping it in state means a node reads all its inputs from one place.
+    The LLM client lives here rather than in a context schema: there is no checkpointer,
+    so nothing is serialised and a live client is safe to hold -- which lets a node read
+    all its inputs from one place.
     """
 
     llm: AsyncOpenAI
@@ -259,9 +250,9 @@ class PlanState(TypedDict, total=False):
     last_turn: Turn | None
     #: Results of tool calls already made this run, keyed by name + arguments.
     tool_cache: dict[str, str]
-    #: Venue name -> Google's opening-hours lines, harvested from `search_places`.
-    #: The run already paid for this data; keeping it lets the constraint layer check
-    #: opening times against Google rather than against the model's account of them.
+    #: Venue name -> Google's opening-hours lines, harvested from `search_places`. The run
+    #: already paid for this; keeping it lets the constraint layer check opening times
+    #: against Google rather than against the model's account of them.
     place_hours: dict[str, list[str]]
     place_prices: dict[str, str]
     #: Venue name -> (latitude, longitude), harvested from `search_places`. Rendered
@@ -293,11 +284,9 @@ def _tool_key(call) -> str:
 def _places_in(payload: str) -> list[dict]:
     """The venue dicts inside a serialised `search_places` reply, or nothing.
 
-    Reads the serialised reply rather than the tool's return value because that reply is
-    what the loop already has in hand, and it is the same string the model sees.
-
-    Never raises: a payload it cannot read simply contributes nothing, and a plan must
-    not fail because a bookkeeping step was surprised.
+    Reads the serialised reply, not the tool's return value: it is what the loop has in
+    hand and the same string the model sees. Never raises -- an unreadable payload
+    contributes nothing rather than failing the plan over bookkeeping.
     """
     try:
         parsed = json.loads(payload)
@@ -312,12 +301,8 @@ def _places_in(payload: str) -> list[dict]:
 
 
 def harvest_place_hours(tool: str, payload: str, into: dict[str, list[str]]) -> None:
-    """Keep the opening hours a `search_places` result carried.
-
-    The run pays for this data and then throws it away; retaining it is what lets the
-    constraint layer check opening times against *Google* rather than against the
-    model's account of them.
-    """
+    """Keep the opening hours a `search_places` result carried, so the constraint layer
+    can check opening times against *Google* rather than the model's account of them."""
     if tool != "search_places":
         return
     for place in _places_in(payload):
@@ -329,9 +314,8 @@ def harvest_place_hours(tool: str, payload: str, into: dict[str, list[str]]) -> 
 def harvest_place_points(tool: str, payload: str, into: dict[str, tuple[float, float]]) -> None:
     """Keep the coordinates a `search_places` result carried.
 
-    The cheapest of the three harvests and the one with the largest effect: coordinates
-    turn into distances by arithmetic, so the model can be told how far apart its
-    candidates are without a single extra API call. See `app/agent/proximity.py`.
+    Coordinates turn into distances by arithmetic, so the model learns how far apart its
+    candidates are without one extra API call. See `app/agent/proximity.py`.
     """
     if tool != "search_places":
         return
@@ -345,10 +329,9 @@ def harvest_place_points(tool: str, payload: str, into: dict[str, tuple[float, f
 def harvest_place_prices(tool: str, payload: str, into: dict[str, str]) -> None:
     """Keep the price band a `search_places` result carried.
 
-    Same bargain as the hours: the data is already bought and paid for. It is far too
-    coarse to price an activity from -- "MODERATE" is not a number -- but it is enough to
-    catch the one contradiction that matters, a venue Google prices at all being budgeted
-    at nothing. See `validation._check_price_levels`.
+    Too coarse to price an activity from -- "MODERATE" is not a number -- but enough to
+    catch a venue Google prices at all being budgeted at nothing. See
+    `validation._check_price_levels`.
     """
     if tool != "search_places":
         return
@@ -389,26 +372,22 @@ async def _execute_tool_call(call, context: dict) -> tuple[ToolCallRecord, dict]
 async def gather(state: PlanState) -> dict:
     """One tool-calling turn: let the model either ask for tools or answer.
 
-    **Model routing lives here.** The first turn of a run only reads the request and
-    picks tool arguments, which is a much smaller job than composing an itinerary --
-    so when a cheaper model is configured, that turn runs on it.
-
-    What makes the swap safe is `tool_choice="required"`: the cheap model is *only
-    able* to emit a tool call, so it cannot produce a lower-quality plan. The strong
-    model does every turn that writes or repairs the itinerary. Forcing a tool call
-    costs nothing in practice -- the system prompt already tells the model to check
-    the weather before committing to outdoor time.
+    **Model routing lives here.** The first turn only reads the request and picks tool
+    arguments, so it runs on the cheap model when one is configured. What makes that safe
+    is `tool_choice="required"`: the cheap model is *only able* to emit a tool call, so it
+    cannot produce a lower-quality plan, and the strong model does every turn that writes
+    or repairs the itinerary. Forcing a call costs nothing -- the system prompt already
+    asks for the weather first.
     """
     writer = get_stream_writer()
     first_turn = state["rounds_left"] == state["rounds_total"]
     routed = first_turn and bool(state.get("fast_model"))
     model = state["fast_model"] if routed else state["model"]
 
-    # Sent with this turn but deliberately not written back into `messages` below: it is
-    # a one-shot nudge about the budget, not a fact about the trip, and leaving it out of
-    # the history keeps the stored conversation the same shape whether or not the loop
-    # ran long. Never on the opening turn -- telling the model to wrap up before it has
-    # asked anything would defeat the tool loop entirely.
+    # Sent with this turn but never written back into `messages`: a one-shot nudge about
+    # the budget is not a fact about the trip, and keeping it out leaves the history the
+    # same shape whether or not the loop ran long. Never on the opening turn, which would
+    # tell the model to wrap up before it has asked anything.
     outgoing = list(state["messages"])
     if state["rounds_left"] <= 1 and not first_turn:
         outgoing.append({"role": "system", "content": LAST_ROUND_NOTICE})
@@ -424,10 +403,9 @@ async def gather(state: PlanState) -> dict:
     ):
         writer(event)
 
-    # Trim to the call budget *before* the turn is written into the history. Every tool
-    # call an assistant message declares must come back with a matching tool reply, so a
-    # message promising twenty calls while only sixteen are executed is a malformed
-    # conversation, not a smaller one -- and the endpoint rejects the next request.
+    # Trim to the call budget *before* the turn enters the history. Every declared tool
+    # call must come back with a matching reply, so a message promising twenty while
+    # sixteen run is malformed, not smaller -- the endpoint rejects the next request.
     allowed = max(0, MAX_TOOL_CALLS - state["calls_made"])
     dropped = turn.tool_calls[allowed:]
     turn.tool_calls = turn.tool_calls[:allowed]
@@ -464,11 +442,9 @@ async def gather(state: PlanState) -> dict:
 async def run_tools(state: PlanState) -> dict:
     """Execute the pending tool calls concurrently and feed the results back.
 
-    Identical calls are answered from a per-run cache instead of being made again.
-    Observed live: the model asked for the same forecast three times in one run and
-    wrote near-duplicate preferences each round. Replaying the result -- and saying
-    plainly that it is a repeat -- costs nothing and stops the tool from running
-    three times for one answer.
+    Identical calls are answered from a per-run cache rather than made again -- observed
+    live, the model asked for the same forecast three times in one run. The replay says
+    plainly that it is a repeat, so the model moves on instead of asking a fourth time.
     """
     writer = get_stream_writer()
     context = {"user_id": state.get("user_id") or ""}
@@ -524,11 +500,10 @@ async def run_tools(state: PlanState) -> dict:
             logger.info("tool %s degraded: %s", record.name, record.error)
         writer(PlanEvent(type="tool_result", name=record.name, ok=record.ok, code=record.code))
 
-    # Hand the model a digest of everything verified so far -- hours, price bands and
-    # distances -- *before* it picks venues and times, rather than leaving it to re-read
-    # raw tool JSON while composing. Sent only when the set of known venues has actually
-    # grown, so a run that searches twice does not carry two near-identical briefs for
-    # the rest of the conversation.
+    # A digest of everything verified so far -- hours, price bands, distances -- handed
+    # over *before* venues and times are picked, rather than leaving the model to re-read
+    # raw tool JSON while composing. Sent only when the set of known venues grew, so two
+    # searches do not leave two near-identical briefs in the conversation.
     known = len({*points, *hours, *prices})
     announced = state["brief_covered"]
     block = brief.render(points, hours, prices) if known > announced else None
@@ -542,9 +517,8 @@ async def run_tools(state: PlanState) -> dict:
     if state["rounds_left"] <= 0:
         warnings.append(tool_rounds_spent(state["rounds_total"]))
     elif state["calls_made"] >= MAX_TOOL_CALLS:
-        # Spent the budget exactly, with nothing dropped: the loop still ends here, and
-        # ending a research loop early is a fact about the plan, not an implementation
-        # detail to keep quiet about.
+        # Spent exactly, nothing dropped. The loop still ends here, and ending research
+        # early is a fact about the plan rather than an implementation detail.
         warnings.append(tool_calls_spent(MAX_TOOL_CALLS))
 
     return {
@@ -582,9 +556,9 @@ async def emit(state: PlanState) -> dict:
         logger.info("no usable itinerary from the tool stage (%s)", state.get("parse_errors"))
         writer(PlanEvent(type="stage", name="composing", message="Writing it up as an itinerary"))
         instruction = EMIT_INSTRUCTION.format(schema=state["schema"])
-        # The tool-stage reply was not malformed, it was too long. Asking for the same
-        # itinerary again without saying so buys an identical reply, cut in the same
-        # place -- and the emit budget is two attempts, not many.
+        # The tool-stage reply was not malformed, it was too long. Asking again without
+        # saying so buys an identical reply cut in the same place, and there are only two
+        # attempts.
         if state.get("truncated"):
             instruction += "\n\n" + TRUNCATION_ERROR
         messages.append({"role": "user", "content": instruction})
@@ -632,9 +606,9 @@ async def validate(state: PlanState) -> dict:
     report = validate_itinerary(
         state["itinerary"], state.get("place_hours"), state.get("place_prices")
     )
-    # The heuristic proposes, measurement disposes: only the pairs it already flagged
-    # get a real travel time, so this costs a few Routes calls rather than one per
-    # activity pair. Without a maps key it is a no-op and the heuristic stands.
+    # The heuristic proposes, measurement disposes: only flagged pairs get a real travel
+    # time, so this costs a few Routes calls rather than one per activity pair. Without a
+    # maps key it is a no-op and the heuristic stands.
     report = await confirm_transfers(report)
     writer(PlanEvent(type="validation", violations=report.violations))
     return {"report": report}
@@ -711,11 +685,9 @@ async def finish(state: PlanState) -> dict:
         )
         return {"warnings": warnings}
 
-    # The validation report is *not* folded in here. It travels whole, in `validation`,
-    # where every finding keeps its code, its day and its measured minutes. Copying the
-    # messages across as well made the same finding arrive twice in two renderings, and
-    # the only consumer that displayed both had to suppress one by comparing sentences.
-    # Advisory remarks ride along in that report too, so nothing stops being said.
+    # The validation report is *not* folded into `warnings`. It travels whole, in
+    # `validation`, where each finding keeps its code, day and measured minutes -- copying
+    # the messages across too made the same finding arrive twice in two renderings.
 
     writer(
         PlanEvent(
@@ -810,26 +782,20 @@ async def stream_plan(
 ) -> AsyncIterator[PlanEvent]:
     """Plan a trip, emitting progress events as the work happens.
 
-    Pass `previous` to **revise** that itinerary instead of writing a new one. The
-    revision takes the same path as a fresh plan -- tools, then validate, then repair,
-    then re-validate -- which is the whole point: an edit that quietly breaks the budget
-    or leaves ten minutes to cross the city gets caught by the same code that would have
-    caught it the first time. Revising is the one thing a chat transcript cannot give
-    you for free.
-
-    The caller supplies the itinerary rather than the service remembering it: this stays
-    stateless, and the client already holds the plan it is asking to change.
+    Pass `previous` to **revise** that itinerary instead of writing a new one. A revision
+    takes the same path as a fresh plan -- tools, validate, repair, re-validate -- so an
+    edit that breaks the budget or leaves ten minutes to cross the city is caught by the
+    same code that would have caught it the first time. The caller supplies the itinerary
+    rather than the service remembering it, which keeps this stateless.
 
     Terminates with exactly one `result` event. Failures raise PlanningError subclasses
-    rather than yielding an error event, so the HTTP layer keeps deciding status codes;
-    the SSE endpoint converts them for a stream that has already started.
+    rather than yielding an error event, so the HTTP layer keeps deciding status codes.
     """
     llm = client or build_client()
     model = model or settings.openai_model
     if not model:
-        # Reachable only from a direct caller -- evals, the smoke scripts -- since the
-        # HTTP layer settles the model before it gets here. Sending "" to the API is a
-        # provider-specific error message about an unknown model; this one names the fix.
+        # Only reachable when OPENAI_MODEL was explicitly blanked. Sending "" to the API
+        # gets a provider-specific message about an unknown model; this one names the fix.
         raise PlanningConfigError(
             "no model was chosen and OPENAI_MODEL is not set; pass model= or put one in "
             "backend/.env"
@@ -838,10 +804,9 @@ async def stream_plan(
     today = today or date.today()
     rounds = max_tool_rounds if max_tool_rounds is not None else settings.max_tool_rounds
 
-    # The schema goes in the system prompt, not just in the emit-stage fallback.
-    # Without it the model has to guess the field names on its first attempt, so the
-    # fast path essentially always failed and every request paid for a second full
-    # generation -- visible as a "composing" stage restart in the event stream.
+    # The schema goes in the system prompt, not just the emit-stage fallback. Without it
+    # the model guesses field names on its first attempt, so the fast path always failed
+    # and every request paid for a second full generation.
     schema = itinerary_schema_json()
 
     # Recall costs no LLM call: known preferences go straight into the system prompt.
@@ -855,20 +820,18 @@ async def stream_plan(
         # drift apart.
         min_transfer=MIN_TRANSFER_MINUTES,
     )
-    # Estimate in the traveller's currency rather than converting afterwards. A
-    # conversion needs an FX source, and a rate that is hours old turns an estimate
-    # into a number that looks precise and is not. Empty means the model picks, which
-    # is the old behaviour and what any non-app caller gets.
+    # Estimate in the traveller's currency rather than converting afterwards: conversion
+    # needs an FX source, and an hours-old rate makes an estimate look precise. Empty
+    # means the model picks.
     if currency:
         system_prompt += "\n\n" + CURRENCY_RULE.format(currency=currency)
     known = await (memory or memory_store).recall(user_id) if user_id else []
     if known:
         system_prompt += "\n\n" + recall_block([preference.text for preference in known])
 
-    # The rule goes in the system prompt and the plan itself in the user turn: the
-    # discipline is standing instruction, the itinerary is this turn's data. Sending
-    # the plan rather than replaying the original run's transcript keeps the prompt to
-    # what is actually being edited -- no tool calls, no superseded drafts.
+    # The rule is a standing instruction, so it goes in the system prompt; the plan is
+    # this turn's data, so it goes in the user turn. Sending the plan rather than
+    # replaying the original transcript keeps out tool calls and superseded drafts.
     if previous is not None:
         system_prompt += "\n\n" + REVISION_RULE
         request = REVISION_REQUEST.format(
@@ -908,13 +871,12 @@ async def stream_plan(
         "repairs_left": MAX_CONSTRAINT_REPAIRS,
     }
 
-    # Emitted here rather than from a node: it should reach the client the moment the
+    # Emitted here rather than from a node, so it reaches the client the moment the
     # request arrives, before the graph does any work.
     yield PlanEvent(type="stage", name="understanding", message="Understanding your request")
 
-    # `stream_mode="custom"` yields exactly what the nodes hand to their writer, so the
-    # event sequence is the nodes' business and this layer stays a pass-through.
-    # `recursion_limit` bounds the cycles: without it a routing bug would spin forever.
+    # `stream_mode="custom"` yields exactly what the nodes write, keeping this layer a
+    # pass-through. `recursion_limit` bounds the cycles a routing bug could spin in.
     async for event in GRAPH.astream(
         state,
         stream_mode="custom",

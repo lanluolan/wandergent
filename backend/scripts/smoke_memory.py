@@ -56,8 +56,8 @@ async def main() -> int:
         if not value
     ]
     if missing:
-        # These run the orchestrator directly, so they cannot borrow a caller's headers
-        # the way the HTTP endpoints do -- a developer box needs its own provider named.
+        # Only the key has no default, but a box that blanked either of the others in
+        # .env should hear about all three at once rather than one rerun at a time.
         print(f"{', '.join(missing)} not set. Put them in backend/.env, then rerun.")
         return 1
 

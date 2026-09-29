@@ -48,8 +48,8 @@ async def test_the_maps_tools_are_published_without_their_seams() -> None:
 
     travel = tools["get_travel_time"].input_schema["properties"]
     assert set(travel) == {"origin", "destination", "mode"}
-    # Transit is unavailable upstream; the description has to say so, or a client will
-    # ask for it and read the empty answer as "no route exists".
+    # Transit coverage is regional; the description has to say so, or a client will read
+    # an empty answer as "no route exists" rather than "not offered here".
     assert "transit" in tools["get_travel_time"].description.lower()
 
 

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.main import app
 from app.tools import maps
-from app.tools.maps import MAX_MAP_PLACES, render_day_map, static_map_params
+from app.tools.maps import MAX_MAP_PLACES, map_stops, render_day_map, static_map_params
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
@@ -32,6 +32,49 @@ def test_every_stop_gets_its_own_numbered_marker() -> None:
     assert len(markers) == 3
     assert markers[0].endswith("|A") and "label:1" in markers[0]
     assert markers[2].endswith("|C") and "label:3" in markers[2]
+
+
+def test_a_place_repeated_in_a_row_gets_one_marker() -> None:
+    """Two pins on one point is one pin with a lost number: the second hides under it."""
+    assert map_stops(["A", "A", "B"]) == ["A", "B"]
+    assert map_stops(["A", " a ", "B"]) == ["A", "B"]
+
+
+def test_one_place_spelled_two_ways_in_a_row_is_one_stop() -> None:
+    """Plans do this constantly: the full address, then the name of the same place."""
+    assert map_stops(["30 Rockefeller Plaza, New York, NY 10112", "Rockefeller Plaza"]) == [
+        "30 Rockefeller Plaza, New York, NY 10112"
+    ]
+    # The specific spelling wins whichever order it arrives in -- Google can put that one
+    # on a doorstep.
+    assert map_stops(["Rockefeller Plaza", "30 Rockefeller Plaza, New York, NY 10112"]) == [
+        "30 Rockefeller Plaza, New York, NY 10112"
+    ]
+
+
+def test_the_same_name_far_apart_in_the_day_keeps_both_visits() -> None:
+    """Only neighbours collapse: a hotel at both ends is still two points on the line."""
+    assert map_stops(["Hotel Figueroa", "The Broad", "Hotel Figueroa"]) == [
+        "Hotel Figueroa",
+        "The Broad",
+        "Hotel Figueroa",
+    ]
+
+
+def test_blanks_are_dropped_and_the_route_is_capped() -> None:
+    assert map_stops(["  ", "A", "", "B"]) == ["A", "B"]
+    assert len(map_stops([f"stop {i}" for i in range(MAX_MAP_PLACES + 5)])) == MAX_MAP_PLACES
+
+
+def test_a_place_visited_again_later_is_one_marker_but_still_on_the_line() -> None:
+    """A hotel at both ends of the day is one pin and a loop, not two pins in one spot."""
+    params = static_map_params(["Hotel", "Museum", "Hotel"], 640, 400)
+    markers = [value for key, value in params if key == "markers"]
+
+    assert len(markers) == 2
+    assert "label:1" in markers[0] and markers[0].endswith("|Hotel")
+    assert "label:2" in markers[1] and markers[1].endswith("|Museum")
+    assert "Hotel|Museum|Hotel" in dict(params)["path"]
 
 
 def test_the_stops_are_joined_into_one_route_line() -> None:

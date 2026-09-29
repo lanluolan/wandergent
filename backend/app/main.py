@@ -5,9 +5,12 @@ both share one orchestrator. `/health` is a liveness probe and answers without a
 external dependency.
 """
 
+import hashlib
 import logging
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -17,7 +20,6 @@ from pydantic import BaseModel, Field
 from app import mail
 from app import ratelimit as ratelimits
 from app.agent.events import PlanEvent
-from app.agent.llm import LlmCredentialsError, LlmOverride, build_client, parse_override
 from app.agent.orchestrator import (
     PlanningConfigError,
     PlanningError,
@@ -52,16 +54,16 @@ from app.community.store import (
 )
 from app.config import settings
 from app.map_page import day_map_page
+from app.memory import store as memory_store
+from app.memory.store import MAX_PREFERENCES_STORED
 from app.ratelimit import Limit, limiter
-from app.tools.maps import MAX_MAP_PLACES, geocode_places, render_day_map
+from app.tools.maps import DEFAULT_LANGUAGE, MAX_MAP_PLACES, geocode_places, render_day_map
 
 logging.basicConfig(level=logging.DEBUG if settings.debug else logging.INFO)
 
-# httpx logs every request line at INFO, URL and all. Places and Routes pass the Maps
-# key in a header so they were never exposed, but the Geocoding API only accepts it as
-# a query parameter -- so the key was being written into the log on every geocode call.
-# Capping httpx here rather than in each call site: any future query-string secret is
-# covered by the same line, and no caller has to remember.
+# httpx logs every request line at INFO, URL and all -- and the Geocoding API only takes
+# the Maps key as a query parameter, so it was being logged on every geocode call. Capped
+# here rather than per call site, so any future query-string secret is covered too.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -71,30 +73,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Report config problems at boot instead of on the first request.
 
-    This warns rather than exits: `/health` and the whole offline test suite are
-    meant to work without a key, and a container that refuses to start cannot be
-    inspected. Requests that actually need the model still fail with a 500.
+    Warns rather than exits: `/health` and the offline test suite are meant to work
+    without a key, and a container that refuses to start cannot be inspected. Requests
+    that need the model still fail with a 500.
     """
-    # Says what callers must supply, which is the question anyone reading this log has.
-    # None of the three being set is the normal deployment, not a mistake: the model
-    # account belongs to the traveller. Requests that arrive without what is missing get
-    # a 400 naming the field, never a 500.
-    missing = [
-        header
-        for header, value in (
-            ("X-LLM-Api-Key", settings.openai_api_key),
-            ("X-LLM-Base-Url", settings.openai_base_url),
-            ("X-LLM-Model", settings.openai_model),
-        )
-        if not value
-    ]
-    if not missing:
+    if settings.openai_api_key:
         logger.info("LLM configured: %s @ %s", settings.openai_model, settings.openai_base_url)
     else:
-        logger.info(
-            "bring-your-own-key mode: callers must send %s. Set the matching OPENAI_* "
-            "vars in backend/.env only if this server should have an account of its own.",
-            ", ".join(missing),
+        logger.warning(
+            "OPENAI_API_KEY is not set -- planning will fail with a 500 on the first "
+            "request. Put a key in backend/.env."
         )
 
     if settings.smtp_host:
@@ -108,53 +96,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-def llm_override(
-    api_key: Annotated[str | None, Header(alias="X-LLM-Api-Key")] = None,
-    base_url: Annotated[str | None, Header(alias="X-LLM-Base-Url")] = None,
-    model: Annotated[str | None, Header(alias="X-LLM-Model")] = None,
-) -> LlmOverride | None:
-    """The caller's own LLM credentials, if they sent any.
-
-    Headers rather than body fields, for two reasons. A key in the body ends up in
-    request-logging middleware, in FastAPI's validation-error echo and in any client that
-    pretty-prints what it sent; headers are the thing every logger is already written to
-    redact. And `PlanRequest` is the schema `docs/api.md` is generated from and the
-    Android DTO mirrors -- a secret does not belong in a document meant to be published.
-
-    Rejects with 400 rather than falling back to the server's key: silently ignoring
-    credentials someone deliberately sent would spend the operator's money on a request
-    that asked not to.
-
-    Also rejects with 400 when *neither* side has a key. A deployment run for other
-    people is expected to leave `OPENAI_API_KEY` empty -- the point of bringing a key is
-    that the operator does not pay for strangers' tokens -- and the person who then hits
-    this is a traveller, not whoever wrote `.env`. `PlanningConfigError` would have made
-    it a 500 reading "put your key in backend/.env", which is the right sentence said to
-    the wrong person, and a 5xx tells the client to retry something retrying cannot fix.
-    """
-    try:
-        override = parse_override(api_key, base_url, model)
-    except LlmCredentialsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if override is None and not settings.openai_api_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "this server has no AI account of its own, so planning needs yours. "
-                "Open You -> AI model and add an API key."
-            ),
-        )
-    return override
-
-
 def caller(request: Request) -> str:
     """A key for the client, for rate limiting only.
 
-    Deliberately `request.client.host` and **not** `X-Forwarded-For`: without a trusted
-    proxy in front, that header is set by the caller, so honouring it would let anyone
-    reset their own limit by inventing an address. If a reverse proxy is put in front of
-    this, that is the moment to read a forwarded header -- and to configure which one.
+    `request.client.host`, **not** `X-Forwarded-For`: with no trusted proxy in front, that
+    header is caller-supplied, so honouring it lets anyone reset their own limit by
+    inventing an address. Put a proxy in front and this is the line to revisit.
     """
     return request.client.host if request.client else "unknown"
 
@@ -177,20 +124,14 @@ def enforce(key: str, limit: Limit) -> None:
 def enforce_plan_budget(key: str) -> None:
     """Both ceilings on a planning run: this caller's, and the service's.
 
-    Checked together and recorded together. Taken one at a time, a run refused by the
-    second would already have been counted against the first -- so a caller repeatedly
-    bouncing off their own hourly limit would silently eat the day's global budget
-    without a single plan being produced.
+    Checked and recorded together. One at a time, a run refused by the second would
+    already have been counted against the first, so a caller bouncing off their own
+    hourly limit would eat the day's global budget without producing a plan.
 
-    The two refusals are deliberately different. Spending your own allowance is a 429:
-    you did it, and waiting fixes it. Hitting the service ceiling is a 503: you did
-    nothing wrong, the service is out of budget, and telling you "too many requests"
-    would send you tapping retry over something you cannot influence.
-
-    **Applies to callers who bring their own LLM key too.** Their key pays for the
-    tokens, but not for the run: a single plan also spends this server's Google Places
-    and Routes quota, which is the expensive half and stays on the operator's bill. An
-    exemption here would also be trivially claimed -- "I brought a key" is a header.
+    The refusals differ on purpose. Spending your own allowance is a 429 -- you did it,
+    waiting fixes it. Hitting the service ceiling is a 503: nothing is wrong with the
+    request, and "too many requests" would send the caller retrying over something they
+    cannot influence.
     """
     daily = ratelimits.plan_daily_global()
     personal = limiter.blocked(key, ratelimits.PLAN)
@@ -229,71 +170,80 @@ GLOBAL_PLAN_KEY = "plan:all"
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
-class LlmSupport(BaseModel):
-    """What this server can lend a caller who does not send all three headers.
+class SavedPreference(BaseModel):
+    id: str
+    text: str
+    created_at: datetime
 
-    Booleans rather than the values themselves. The client needs to know which fields it
-    must ask for, not what they would be, and a server's endpoint and model are
-    operational detail nobody has to publish to answer that.
 
-    Without this the app cannot label its own form: whether the model and endpoint are
-    required is a fact about the server, and guessing it either way is wrong. A
-    deployment that carries no account needs them filled in; one pointed at a provider
-    with no key of its own does not, and forcing them there is pointless typing.
-    """
+def preference_id(text: str) -> str:
+    """Keep preference text out of URLs and access logs without a database migration."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    key: bool
-    endpoint: bool
-    model: bool
+
+@app.get("/preferences", response_model=list[SavedPreference])
+async def list_preferences(
+    response: Response, account: Annotated[Account, Depends(signed_in)]
+) -> list[SavedPreference]:
+    """All saved preferences for the signed-in account, including those beyond recall's cap."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        preferences = await memory_store.recall(account.id, limit=MAX_PREFERENCES_STORED)
+    except sqlite3.Error as exc:
+        logger.warning("preference listing failed: %s", type(exc).__name__)
+        raise HTTPException(503, "Saved preferences are temporarily unavailable.") from exc
+    return [
+        SavedPreference(id=preference_id(p.text), text=p.text, created_at=p.created_at)
+        for p in preferences
+    ]
+
+
+@app.delete("/preferences/{preference_key}", status_code=204)
+async def delete_preference(
+    preference_key: str, account: Annotated[Account, Depends(signed_in)]
+) -> Response:
+    """Idempotent deletion; another account's preference is indistinguishable from absence."""
+    try:
+        preferences = await memory_store.recall(account.id, limit=MAX_PREFERENCES_STORED)
+        for preference in preferences:
+            if preference_id(preference.text) == preference_key:
+                await memory_store.forget_one(account.id, preference.text)
+                break
+    except sqlite3.Error as exc:
+        logger.warning("preference deletion failed: %s", type(exc).__name__)
+        raise HTTPException(503, "Could not delete this preference. Please try again.") from exc
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
 class HealthResponse(BaseModel):
     status: str
     app: str
-    llm: LlmSupport
 
 
 class PlanRequest(BaseModel):
-    """A trip described in free text, e.g. '3 days in Los Angeles next month, budget $900'."""
+    """A trip described in free text, e.g. '3 days in Los Angeles next week, budget $900'."""
 
     message: str = Field(min_length=1, max_length=2000)
 
-    # No user_id. Whose preferences to recall and update comes from the bearer token, so
-    # a caller cannot aim a memory write at somebody else's account -- which is exactly
-    # what this field allowed while it existed. Planning without a token still works and
-    # is simply anonymous: no recall, no writes.
+    # No user_id: whose preferences to recall and update comes from the bearer token, so
+    # a caller cannot aim a memory write at another account. No token means an anonymous
+    # run -- no recall, no writes.
 
-    # ISO 4217 code the traveller settles up in. The plan is *estimated* in it rather
-    # than converted into it: a conversion needs an FX source, and a stale rate makes an
-    # estimate look precise. Empty lets the model use the destination's local currency,
-    # which is what any caller that does not set this gets.
+    # ISO 4217 code the traveller settles up in. The plan is *estimated* in it, never
+    # converted into it: conversion needs an FX source, and a stale rate makes an estimate
+    # look precise. Empty lets the model use the destination's local currency.
     currency: str = Field(default="", pattern="^$|^[A-Za-z]{3}$")
 
-    # An itinerary to **revise** rather than replace. Sent by the client because this
-    # service is stateless and the client already holds the plan it wants changed. The
-    # revision runs the same validate-repair-revalidate cycle as a fresh plan, so an
-    # edit cannot quietly put the trip over budget or leave no time to get anywhere.
-    # Null means "plan something new", which is what every caller got before this.
+    # An itinerary to **revise** rather than replace, sent by the client because this
+    # service is stateless. A revision runs the same validate-repair-revalidate cycle as a
+    # fresh plan, so an edit cannot quietly put the trip over budget. Null plans anew.
     previous: Itinerary | None = None
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Health check: confirm the service is up and config is readable.
-
-    Also reports what the LLM config can supply, which the app reads before showing its
-    "AI model" form. Unauthenticated on purpose: it says only whether three settings are
-    non-empty, which is less than the planning endpoints already tell anyone who tries.
-    """
-    return HealthResponse(
-        status="ok",
-        app=settings.app_name,
-        llm=LlmSupport(
-            key=bool(settings.openai_api_key),
-            endpoint=bool(settings.openai_base_url),
-            model=bool(settings.openai_model),
-        ),
-    )
+    """Health check: confirm the service is up and config is readable."""
+    return HealthResponse(status="ok", app=settings.app_name)
 
 
 @app.post("/plan", response_model=PlanResult)
@@ -301,14 +251,11 @@ async def plan(
     payload: PlanRequest,
     request: Request,
     account: Annotated[Account | None, Depends(viewer)],
-    override: Annotated[LlmOverride | None, Depends(llm_override)] = None,
 ) -> PlanResult:
     """Plan a trip from a natural-language request.
 
-    Signing in is optional here and always was: an anonymous run simply has no
-    preferences to recall and writes none back.
-
-    Upstream problems are mapped to their own status codes so the client can tell a
+    Signing in is optional: an anonymous run has no preferences to recall and writes none
+    back. Upstream problems get their own status codes, so the client can tell a
     misconfigured server from a slow model from a dead one.
     """
     # Keyed on the account when there is one, so a shared address does not make one
@@ -320,12 +267,6 @@ async def plan(
             user_id=account.id if account else "",
             currency=payload.currency.upper(),
             previous=payload.previous,
-            client=build_client(override) if override else None,
-            model=override.model if override else None,
-            # Routing sends the first turn to `FAST_MODEL`, a name from *this* server's
-            # provider. A caller's own endpoint has never heard of it, so every routed
-            # run would fail on the first turn. Their key, their one model.
-            fast_model="" if override else None,
         )
     except PlanningConfigError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -343,9 +284,9 @@ async def day_map(
 ) -> Response:
     """Render one day's stops as a PNG, numbered and joined in order.
 
-    The client asks us rather than Google: the key never leaves the server, and the
-    app needs no Google Play services -- which the test device does not have, so this
-    is the only way a map reaches it at all.
+    The client asks us rather than Google: the key never leaves the server, and the app
+    needs no Play services -- which the test device lacks, so this is the only way a map
+    reaches it at all.
 
     Repeat `place` once per stop, in visiting order:
     `/day-map?place=Willis Tower,Chicago&place=Fulton Market,Chicago`
@@ -365,19 +306,18 @@ async def day_map(
 @app.get("/day-map/interactive", response_class=HTMLResponse)
 async def day_map_interactive(
     place: Annotated[list[str], Query(min_length=1, max_length=MAX_MAP_PLACES)],
-    language: str = "zh-CN",
+    language: str = DEFAULT_LANGUAGE,
     debug: bool = False,
 ) -> HTMLResponse:
     """The same day, as a map you can pan and zoom, for a WebView to load.
 
-    The Android Maps SDK needs Google Play services; the JavaScript API needs only a
-    Chromium. This endpoint is what makes an interactive map possible on a device
-    without Play services at all.
+    The Android Maps SDK needs Play services; the JavaScript API needs only a Chromium,
+    which is what makes an interactive map possible on this device at all.
 
-    Unlike every other Google call in this service, the key here **reaches the device**
-    -- the API runs in the user's browser. Set `GOOGLE_MAPS_BROWSER_KEY` to a key
-    restricted to Maps JavaScript API so a leak cannot be spent on Places or Routes.
-    Stops are geocoded here, so the page itself needs no Geocoding rights.
+    Unlike every other Google call here, the key **reaches the device** -- the API runs in
+    the user's browser. Set `GOOGLE_MAPS_BROWSER_KEY` to a Maps-JavaScript-only key so a
+    leak cannot be spent on Places or Routes. Stops are geocoded server-side, so the page
+    itself needs no Geocoding rights.
     """
     key = settings.maps_browser_key
     if not key:
@@ -414,7 +354,6 @@ async def plan_stream(
     payload: PlanRequest,
     request: Request,
     account: Annotated[Account | None, Depends(viewer)],
-    override: Annotated[LlmOverride | None, Depends(llm_override)] = None,
 ) -> StreamingResponse:
     """Plan a trip, streaming progress as Server-Sent Events.
 
@@ -434,11 +373,6 @@ async def plan_stream(
                 user_id=account.id if account else "",
                 currency=payload.currency.upper(),
                 previous=payload.previous,
-                client=build_client(override) if override else None,
-                model=override.model if override else None,
-                # See the note in `plan`: the server's FAST_MODEL is not a name the
-                # caller's own endpoint knows.
-                fast_model="" if override else None,
             ):
                 yield _sse(event)
         except PlanningError as exc:
@@ -462,19 +396,15 @@ async def plan_stream(
 # Publishing, browsing and saving other people's itineraries. Deliberately thin: this is
 # CRUD over one table, and the interesting part of the product is upstream of it.
 #
-# **No endpoint here is authenticated and none is moderated.** Every `author_id` and
-# `user_id` is a claim the client makes, exactly as `PlanRequest.user_id` already is, so
-# anyone can post as anyone and take down anyone's post. That is acceptable for an
-# on-device demo and is not acceptable the moment this is reachable by strangers; see
-# `app/community/store.py` and `docs/progress.md`.
+# Writing requires a token and authorship comes from it, never from the body. Reading does
+# not. **Nothing here is moderated** -- see `docs/progress.md` before this is reachable by
+# strangers.
 
 
 class SaveRequest(BaseModel):
-    #: No user_id: whose save this is comes from the token. Otherwise anyone could pad
-    #: their own post's count with invented readers.
-    #:
-    #: False unsaves. One endpoint rather than two so the client's toggle maps to one
-    #: call, and both directions are idempotent under retry.
+    #: No user_id: whose save this is comes from the token, or anyone could pad their own
+    #: post's count with invented readers. False unsaves -- one endpoint rather than two,
+    #: so the client's toggle is one call and both directions are idempotent.
     saved: bool = True
 
 
@@ -502,14 +432,13 @@ async def community_feed(
 ) -> Feed:
     """One page of the feed, newest first.
 
-    Readable without an account. A token additionally fills in `saved_by_viewer`, which
-    stays null without one -- "we do not know who is asking" is not "you have not saved
-    this", and only one of them should draw an empty heart.
+    Readable without an account. A token fills in `saved_by_viewer`, which stays null
+    without one -- "we do not know who is asking" is not "you have not saved this", and
+    only one of them draws an empty heart.
 
     `cursor` comes from the previous page's `next_cursor`; null there means the end.
-    Cursors rather than an offset because the feed grows at the top: with an offset, one
-    post published while somebody is reading shifts every later page by one, which shows
-    them a duplicate and hides an item.
+    Cursors, not an offset: the feed grows at the top, so one post published mid-read
+    would shift every later page by one, showing a duplicate and hiding an item.
 
     `destination` is a case-insensitive substring match on the destination only.
     """
@@ -571,13 +500,12 @@ async def withdraw_plan(
 
 # --- accounts ----------------------------------------------------------------------
 #
-# Registration hands back a token immediately: a register that leaves the client to make a
-# second call has a window where the account exists and nobody can use it.
+# Registration hands back a token immediately: leaving the client to make a second call
+# opens a window where the account exists and nobody can use it.
 #
 # The token is the only thing that establishes identity anywhere in this service. It goes
-# in the `Authorization: Bearer` header and never in a query string -- a token in a query
-# string ends up in access logs, which is precisely the bug found in this codebase on
-# 2026-08-17 when httpx logged the Maps key it had to pass as a parameter.
+# in the `Authorization: Bearer` header, never in a query string -- query strings end up
+# in access logs, exactly as the Maps key did (docs/decisions.md, 2026-08-17).
 
 
 @app.post("/auth/register", response_model=Session, status_code=201)
@@ -602,14 +530,12 @@ async def register(credentials: Credentials, request: Request) -> Session:
 async def login(credentials: Credentials, request: Request) -> Session:
     """Start a session.
 
-    One answer for an unknown user and a wrong password. Telling them apart would hand out
-    a list of which accounts exist.
+    One answer for an unknown user and a wrong password: telling them apart hands out a
+    list of which accounts exist.
 
-    Two limits, because they stop different attacks. The per-address one sees password
-    *spraying* -- one guess each against many accounts -- which the per-user counter cannot,
-    since no single account is hit twice. The per-user one counts **failures only**:
-    counting every attempt would let anyone lock a stranger out of their own account by
-    guessing wrong on purpose.
+    Two limits, for two different attacks. Per-address catches password *spraying* -- one
+    guess each against many accounts -- which a per-user counter never sees. Per-user
+    counts **failures only**, or anyone could lock a stranger out by guessing wrong.
     """
     enforce(f"login:{caller(request)}", ratelimits.LOGIN_PER_ADDRESS)
     failures = f"login-fail:{credentials.username.lower()}"
@@ -649,10 +575,9 @@ async def me(account: Annotated[Account, Depends(signed_in)]) -> Account:
 
 # --- password reset -----------------------------------------------------------------
 #
-# The flow is two calls: ask for a code by email, then present the code with a new
-# password. A code rather than a link because there is no web frontend to land a link on,
-# and asking someone to paste a 43-character token into a phone is a worse answer than
-# eight characters they can read off a screen.
+# Two calls: ask for a code by email, then present the code with a new password. A code
+# rather than a link because there is no web frontend to land a link on, and eight
+# characters beat pasting a 43-character token into a phone.
 
 
 class ResetRequest(BaseModel):
@@ -668,10 +593,8 @@ class ResetConfirm(BaseModel):
 async def request_reset(payload: ResetRequest, request: Request) -> Response:
     """Send a reset code, if that address belongs to an account.
 
-    **Always 204.** Answering differently for a known address turns this into a way to
-    ask "does this person have an account here", which is exactly the question a reset
-    endpoint must not answer. The caller cannot tell the difference, and neither can
-    someone probing.
+    **Always 204.** Answering differently for a known address would turn this into a way
+    to ask "does this person have an account here".
     """
     enforce(f"reset:{caller(request)}", ratelimits.RESET_PER_ADDRESS)
 
@@ -712,9 +635,9 @@ async def confirm_reset(payload: ResetConfirm, request: Request) -> Response:
 
 # --- proving the address ------------------------------------------------------------
 #
-# Verification is not decoration here: **password reset only works for a proven address.**
-# Without that rule an unverified address is a takeover route -- register with a stranger's
-# address by typo or on purpose, and the stranger can reset their way in.
+# **Password reset only works for a proven address.** Without that rule an unverified
+# address is a takeover route: register with a stranger's address, and they can reset
+# their way in.
 
 
 class EmailChange(BaseModel):
@@ -752,9 +675,8 @@ async def change_email(
 ) -> Account:
     """Set or change this account's address, and send a code to prove it.
 
-    The new address starts unverified, always. Keeping the flag across a change would let
-    anyone holding a session move a verified account onto an address they do not own --
-    which is the same takeover the verification requirement exists to close.
+    The new address always starts unverified. Carrying the flag across a change would let
+    anyone holding a session move a verified account onto an address they do not own.
     """
     enforce(f"email-change:{account.id}", ratelimits.RESET_PER_ADDRESS)
 
@@ -772,8 +694,8 @@ async def resend_verification(
 ) -> Response:
     """Send another code for this account's address.
 
-    Requires a session rather than taking an address, which is what keeps it from becoming
-    the enumeration oracle the reset endpoint carefully is not.
+    Takes a session rather than an address, so it cannot become the enumeration oracle the
+    reset endpoint carefully is not.
     """
     enforce(f"verify-send:{account.id}", ratelimits.RESET_PER_ADDRESS)
     await send_verification(account.id, account.email)

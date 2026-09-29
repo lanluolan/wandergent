@@ -15,26 +15,12 @@ def test_health_ok() -> None:
     assert body["app"] == "Wandergent"
 
 
-def test_health_says_what_the_server_can_lend(monkeypatch) -> None:
-    """The app labels its own form from this, so it has to be accurate both ways.
+def test_health_never_reveals_the_config(monkeypatch) -> None:
+    """A liveness probe is unauthenticated, so it must say nothing about the account.
 
-    Whether the model and endpoint are required is a fact about the server. Guessing it
-    makes the form wrong in one direction or the other: a deployment carrying no account
-    needs both filled in, one pointed at a provider without a key of its own does not.
+    The endpoint, the model name and above all the key are operational detail; anyone
+    who can reach the port can read this body.
     """
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "openai_base_url", "https://api.example.com/v1")
-    monkeypatch.setattr(settings, "openai_model", "")
-
-    llm = client.get("/health").json()["llm"]
-
-    assert llm == {"key": False, "endpoint": True, "model": False}
-
-
-def test_health_never_reveals_the_values_themselves(monkeypatch) -> None:
-    # It answers "must I ask for this?", not "what is it?". A key especially.
     from app.config import settings
 
     monkeypatch.setattr(settings, "openai_api_key", "sk-the-operators-own-key")

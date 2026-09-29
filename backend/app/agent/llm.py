@@ -1,9 +1,7 @@
 """LLM plumbing: client, streaming turns, and parsing the model's output.
 
-Split out from the orchestrator so that module can be about the *shape* of the run --
-the state graph -- rather than about the mechanics of talking to an API. Nothing here
-knows what a planning run looks like; it knows how to stream one turn and how to read
-an itinerary out of text.
+Split out so the orchestrator can be about the *shape* of a run. Nothing here knows what a
+planning run looks like -- only how to stream one turn and read an itinerary out of text.
 """
 
 import json
@@ -28,10 +26,9 @@ logger = logging.getLogger(__name__)
 _TITLE_RE = re.compile(r'"title"\s*:\s*"([^"\\]{1,60})"')
 _DATE_RE = re.compile(r'"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"')
 
-# What to tell the model when its reply was cut off. Deliberately not the JSON parser's
-# error text: that says "expecting ',' at column 4678", and a model handed that will
-# obediently add a comma to a document whose real problem is that it does not fit. Name
-# the cause and name the levers, or the repair round is wasted.
+# What to tell the model when its reply was cut off -- not the JSON parser's "expecting
+# ',' at column 4678", which buys a comma added to a document whose real problem is that
+# it does not fit. Name the cause and the levers, or the repair round is wasted.
 TRUNCATION_ERROR = (
     "your reply was cut off at the output limit, so the JSON stops mid-document. "
     "This is a length problem, not a punctuation one. Return the whole itinerary "
@@ -53,145 +50,13 @@ class PlanningConfigError(PlanningError):
     """The service itself is misconfigured, e.g. a missing API key."""
 
 
-class LlmCredentialsError(ValueError):
-    """The caller supplied their own LLM credentials and they are not usable.
-
-    Deliberately not a `PlanningError`: those mean the service or the upstream model
-    failed and map to 5xx. This one means the *request* was wrong, which is a 400. A
-    caller who cannot tell the two apart retries forever against a server that will
-    never accept what they are sending.
-    """
-
-
-@dataclass(frozen=True, repr=False)
-class LlmOverride:
-    """LLM credentials supplied per request instead of read from the environment.
-
-    Exists so someone who is not the operator can run the app against their own account:
-    the operator's key stays in `.env` and is never handed out, and the caller pays for
-    their own tokens.
-
-    `repr` is written by hand and `__str__` follows it. A dataclass' generated repr would
-    print the key, and this object ends up inside exception messages, structured logs and
-    debugger frames -- all of which get pasted into issues.
-    """
-
-    api_key: str
-    base_url: str
-    model: str
-
-    def __repr__(self) -> str:
-        return (
-            f"LlmOverride(api_key=***{self.api_key[-4:]}, "
-            f"base_url={self.base_url!r}, model={self.model!r})"
-        )
-
-
-#: OpenAI-compatible endpoints a caller may bring a key for without the operator
-#: configuring anything.
-#:
-#: A curated default rather than an empty one, because the product answer is "use whatever
-#: model you want" and an empty list makes that false. It stays a *closed* list: these are
-#: fixed, well-known, public API hosts, so nothing here is attacker-chosen, which is the
-#: property that matters. OpenRouter is on it deliberately -- it fronts hundreds of models
-#: behind one host, so "any model" is reachable without opening the door to any address.
-DEFAULT_BYOK_BASE_URLS = (
-    "https://api.openai.com/v1",
-    "https://api.anthropic.com/v1",
-    "https://generativelanguage.googleapis.com/v1beta/openai",
-    "https://api.deepseek.com/v1",
-    "https://api.mistral.ai/v1",
-    "https://api.groq.com/openai/v1",
-    "https://api.together.xyz/v1",
-    "https://openrouter.ai/api/v1",
-)
-
-
-def allowed_byok_base_urls() -> frozenset[str]:
-    """Endpoints a caller may point their own key at.
-
-    The server's own is always included, so the simplest case -- same provider, different
-    account -- works with no configuration. Beyond that, `LLM_BYOK_BASE_URLS` *replaces*
-    [DEFAULT_BYOK_BASE_URLS] when it is set, which is how an operator narrows the list;
-    empty means the defaults apply.
-
-    This is an allowlist rather than a validity check on purpose. The base URL is a
-    caller-supplied address that *this server* then makes requests to, which is
-    server-side request forgery by construction: an unchecked one can be pointed at a
-    cloud metadata endpoint or an internal host, and the reply comes back in an error
-    message. A hostname check cannot fix that -- DNS can resolve anywhere, and can change
-    between the check and the call -- so the set of reachable hosts has to stay closed.
-    Widening it to "anything" would hand strangers this machine as an HTTP client.
-    """
-    configured = [
-        url.strip().rstrip("/") for url in settings.llm_byok_base_urls.split(",") if url.strip()
-    ]
-    allowed = configured or [url.rstrip("/") for url in DEFAULT_BYOK_BASE_URLS]
-    own = settings.openai_base_url.rstrip("/")
-    # `own` cannot be blank -- the settings validator refuses that -- but the filter is
-    # cheap and an empty entry here would allow an empty header through.
-    return frozenset(url for url in (own, *allowed) if url)
-
-
-def parse_override(
-    api_key: str | None,
-    base_url: str | None,
-    model: str | None,
-) -> LlmOverride | None:
-    """Read per-request LLM credentials, or None to use the server's own.
-
-    The model may only be chosen alongside a key. Letting a caller pick the model while
-    the *server* pays turns a daily plan budget into an open-ended one -- the ceiling
-    counts runs, and the cost of a run is exactly what the model choice decides.
-
-    Raises [LlmCredentialsError] rather than ignoring what it cannot honour: a silently
-    dropped header looks like a working setting that never takes effect, which is the
-    single most expensive kind of bug to find from the client side.
-    """
-    key = (api_key or "").strip()
-    url = (base_url or "").strip().rstrip("/")
-    name = (model or "").strip()
-
-    if not key:
-        if url or name:
-            raise LlmCredentialsError(
-                "a model or endpoint was supplied without an API key; "
-                "send your own key alongside them, or send none of the three"
-            )
-        return None
-
-    if url and url not in allowed_byok_base_urls():
-        raise LlmCredentialsError(
-            f"this server does not allow {url!r} as an LLM endpoint; "
-            "leave the endpoint unset to use the one it is configured with"
-        )
-
-    # What the server can lend, which on a deployment with no provider of its own is
-    # nothing. Naming the missing field matters: "planning failed" sends someone back to
-    # the key they just typed, which is the one part that was right.
-    endpoint = url or settings.openai_base_url
-    if not endpoint:
-        raise LlmCredentialsError(
-            "this server has no LLM endpoint of its own, so yours is required. "
-            "Add it under You -> AI model, next to your key."
-        )
-    chosen = name or settings.openai_model
-    if not chosen:
-        raise LlmCredentialsError(
-            "this server has no default model, so yours is required. "
-            "Add a model name under You -> AI model, next to your key."
-        )
-
-    return LlmOverride(api_key=key, base_url=endpoint, model=chosen)
-
-
 @dataclass
 class StreamedToolCall:
     """A tool call reassembled from deltas.
 
-    The API sends a tool call in fragments across chunks -- id and name usually in the
-    first, arguments a few characters at a time -- keyed by index, so the pieces have
-    to be accumulated per slot rather than read off any single chunk.
+    The API sends a call in fragments across chunks -- id and name usually in the first,
+    arguments a few characters at a time -- keyed by index, so pieces accumulate per slot
+    rather than being read off any single chunk.
     """
 
     id: str = ""
@@ -207,11 +72,9 @@ class Turn:
     tool_calls: list[StreamedToolCall] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
 
-    # Why the model stopped. "length" means the reply was cut off at the output limit,
-    # which arrives as a half-written JSON object and would otherwise be reported as a
-    # syntax error -- sending the repair round to fix a comma when the real problem is
-    # that the plan is too long to fit. Observed live on a plan whose activities each
-    # carried highlights plus a full street address.
+    # Why the model stopped. "length" means the reply was cut off at the output limit and
+    # arrives as half a JSON object, which without this reads as a syntax error and sends
+    # the repair round after a comma.
     finish_reason: str | None = None
 
     @property
@@ -219,18 +82,8 @@ class Turn:
         return self.finish_reason == "length"
 
 
-def build_client(override: LlmOverride | None = None) -> AsyncOpenAI:
-    """Create the LLM client. Timeout is mandatory, per the project's hard rules.
-
-    With an `override` the caller's key and endpoint are used and the server's are not
-    read at all, so a server with no key of its own still serves callers who bring one.
-    """
-    if override is not None:
-        return AsyncOpenAI(
-            api_key=override.api_key,
-            base_url=override.base_url,
-            timeout=settings.llm_timeout_seconds,
-        )
+def build_client() -> AsyncOpenAI:
+    """Create the LLM client. Timeout is mandatory, per the project's hard rules."""
     if not settings.openai_api_key:
         raise PlanningConfigError("OPENAI_API_KEY is not set; put your key in backend/.env")
     return AsyncOpenAI(
@@ -243,18 +96,14 @@ def build_client(override: LlmOverride | None = None) -> AsyncOpenAI:
 def strip_fences(raw: str) -> str:
     """Pull the JSON object out of a reply, whatever the model wrapped it in.
 
-    Models add markdown fences even when told not to, and -- observed live -- they also
-    preface the answer with a sentence: "I have everything I need to build the
-    itinerary." followed by a fenced block. The previous version only stripped fences
-    when the text *started* with one, so a single line of preamble defeated the fast
-    path and the run paid for a whole second generation. The fast path exists precisely
-    to avoid that, so it has to survive the model being chatty.
+    Models add fences when told not to, and preface the answer with a sentence before
+    them. Stripping fences only when the text *starts* with one lets a line of preamble
+    defeat the fast path, costing a whole second generation.
 
-    Deliberately positional -- first "{" to last "}" -- rather than a JSON scanner:
-    that is the object for every shape seen in practice, and anything cleverer would be
-    guessing at malformed input the parser is about to reject anyway. There is no
-    shortcut for text that already starts with "{" either, because a reply can be valid
-    JSON followed by "let me know if you want changes".
+    Positional -- first "{" to last "}" -- rather than a JSON scanner: that is the object
+    in every shape seen in practice, and anything cleverer only guesses at input the
+    parser is about to reject. No shortcut for text already starting with "{" either: a
+    reply can be valid JSON followed by "let me know if you want changes".
     """
     text = raw.strip()
 
@@ -290,9 +139,8 @@ def parse_turn(turn: Turn) -> tuple[Itinerary | None, str | None]:
     """Read an itinerary out of a finished turn, blaming the right thing when it fails.
 
     Same as `parse_itinerary`, except a reply the endpoint cut off is reported as the
-    truncation it is. Both callers feed the error straight back to the model, so which
-    story it gets decides whether the repair round is spent shortening or shuffling
-    punctuation.
+    truncation it is. The error goes straight back to the model, so which story it gets
+    decides whether the repair round is spent shortening or shuffling punctuation.
     """
     itinerary, errors = parse_itinerary(turn.content)
     if itinerary is None and turn.truncated:
@@ -305,9 +153,8 @@ def is_empty(turn: Turn) -> bool:
     """A turn that said nothing and asked for nothing.
 
     It cannot be sent back: an assistant message with neither content nor tool calls is
-    rejected outright -- observed live as `400 ... assistant must provide content,
-    reasoning_content or tool_calls`, which killed a whole eval case. It also carries no
-    information, so dropping it loses nothing.
+    rejected outright (`400 ... must provide content, reasoning_content or tool_calls`).
+    It carries no information either, so dropping it loses nothing.
     """
     return not turn.content and not turn.tool_calls
 
@@ -383,14 +230,14 @@ async def stream_turn(
         stream = await client.chat.completions.create(
             model=model,
             stream=True,
-            # Ask for the room a full itinerary needs. Left unset, the endpoint applies
-            # its own default -- 4k on ours, which a week-long plan with highlights
-            # overruns, arriving as half a JSON document. Detection below is the
-            # backstop; this is the fix.
-            max_tokens=settings.llm_max_output_tokens,
-            # The endpoint sends a final chunk with empty `choices` and populated
-            # `usage`. Endpoints that ignore the option simply never send it, and the
-            # run reports zero rather than failing.
+            # OpenAI reasoning models reject the legacy `max_tokens` parameter. The
+            # current API uses `max_completion_tokens` for the same output ceiling.
+            max_completion_tokens=settings.llm_max_output_tokens,
+            # Chat Completions on gpt-5.6-luna only supports function tools when
+            # reasoning_effort is explicitly disabled.
+            reasoning_effort="none",
+            # Buys a final chunk with empty `choices` and populated `usage`. An endpoint
+            # that ignores the option never sends it, and the run reports zero.
             stream_options={"include_usage": True},
             **kwargs,
         )

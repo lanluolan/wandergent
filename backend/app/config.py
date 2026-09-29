@@ -1,7 +1,12 @@
 """App config. All secrets / external service URLs come from env vars or .env."""
 
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# What this project actually runs on. Named so the blank-means-unset validator can hand
+# back the same value the field defaults to.
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MODEL = "gpt-5.6-luna"
 
 
 class Settings(BaseSettings):
@@ -16,74 +21,49 @@ class Settings(BaseSettings):
     app_name: str = "Wandergent"
     debug: bool = False
 
-    # LLM. The endpoint is OpenAI-compatible.
-    #
-    # All three are empty by default, and that is the shipping configuration: the model
-    # account belongs to whoever is travelling, not to whoever runs the server. A caller
-    # supplies key, endpoint and model per request; these exist so a developer can point
-    # a local backend at their own provider for evals and smoke runs, which call the
-    # orchestrator directly and never send a header.
-    #
-    # Naming a provider here as a "sensible default" is what this avoids. A deployment
-    # that set none of them would otherwise send every key-only caller to whichever
-    # endpoint happened to be baked in, which is neither what they asked for nor
-    # something they could see.
+    # LLM, on an OpenAI-compatible endpoint. Defaults name what we actually run against,
+    # never the SDK's factory values. The key has no default -- a secret is supplied or
+    # missing, never guessed. The account is the operator's; callers cannot send one of
+    # their own (docs/decisions.md).
     openai_api_key: str = ""
-    openai_base_url: str = ""
-    openai_model: str = ""
+    openai_base_url: str = DEFAULT_BASE_URL
+    openai_model: str = DEFAULT_MODEL
 
-    # Endpoints a caller may point their *own* key at, comma-separated. Empty means
-    # `app.agent.llm.DEFAULT_BYOK_BASE_URLS` -- the well-known OpenAI-compatible hosts --
-    # and setting it *replaces* that list, which is how an operator narrows it. The
-    # server's own `openai_base_url` is added when it is set, which on a deployment
-    # that has no provider of its own it is not -- there the list is the only gate.
-    #
-    # It stays a closed list because it is an SSRF allowlist: every host on it is a host
-    # a stranger can make this machine send a request to. Fixed public API hosts are safe
-    # precisely because they are not caller-chosen; "allow anything" would not be.
-    llm_byok_base_urls: str = ""
+    @field_validator("openai_base_url", "openai_model", mode="before")
+    @classmethod
+    def _blank_means_unset(cls, value: str, info: ValidationInfo) -> str:
+        """Empty means absent. `pydantic-settings` would let `OPENAI_BASE_URL=` override
+        the default and send every request to the SDK's fallback host."""
+        if isinstance(value, str) and not value.strip():
+            return cls.model_fields[info.field_name].default
+        return value
 
     @field_validator("openai_base_url")
     @classmethod
     def _endpoint_must_be_an_endpoint(cls, value: str) -> str:
-        """Empty is fine -- callers bring their own. Malformed is not.
-
-        Unset means "this server has no provider of its own", which is the normal
-        deployment. A value that is present but has no scheme is a typo, and it would
-        otherwise surface per request as a connection error naming neither the setting
-        nor the cause. Config problems belong at boot.
-
-        The trailing slash is normalised so the value compares equal to the same
-        endpoint on the BYOK allowlist.
-        """
-        cleaned = value.strip()
-        if cleaned and not cleaned.startswith(("http://", "https://")):
+        """A missing scheme is a typo, caught at boot rather than as a per-request
+        connection error naming neither the setting nor the cause. Trailing slash is
+        normalised so the value has one form in logs."""
+        cleaned = value.strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
             raise ValueError(
                 f"OPENAI_BASE_URL must start with http:// or https://, got {cleaned!r}"
             )
-        return cleaned.rstrip("/")
+        return cleaned
 
-    # Model routing. The first turn of a run only has to read the request and choose
-    # tool arguments -- it never writes the itinerary, because that turn is forced to
-    # emit a tool call. So it can run on a cheaper model.
-    #
-    # Empty disables routing, which is the safe default: the model name is
-    # endpoint-specific, and a wrong one would fail every request. Set it in .env.
+    # Model routing: the first turn is forced to emit a tool call, so it never writes the
+    # itinerary and can run cheaper. Empty disables routing -- the safe default, since a
+    # model name is endpoint-specific and a wrong one fails every request.
     fast_model: str = ""
 
-    # Maps. Server-side only -- the app never sees this key, it receives rendered map
-    # images from us. Empty disables the maps tools rather than failing: the weather
-    # tool and the rest of the plan still work without them.
+    # Maps, server-side only: the app never sees this key, it receives rendered images.
+    # Empty disables the maps tools rather than failing the run.
     google_maps_api_key: str = ""
 
-    # A second key, for the one thing that cannot stay server-side: the interactive map
-    # page runs the Maps JavaScript API in the user's WebView, so whatever key it uses
-    # is delivered to the device. Restrict this one to Maps JavaScript API alone, so a
-    # leak cannot be spent on Places or Routes -- the expensive SKUs.
-    #
-    # Empty falls back to the server key and logs a warning on every request: fine for a
-    # dev device, not fine in production. Empty *and* no server key disables the
-    # interactive map, and the client keeps the static one.
+    # The interactive map page runs the Maps JavaScript API in the user's WebView, so its
+    # key reaches the device. Restrict this one to Maps JavaScript API alone, so a leak
+    # cannot be spent on Places or Routes. Empty falls back to the server key with a
+    # per-request warning; empty and no server key leaves the client the static map.
     google_maps_browser_key: str = ""
 
     @property
@@ -95,54 +75,36 @@ class Settings(BaseSettings):
     tool_timeout_seconds: float = 8.0
     llm_timeout_seconds: float = 60.0
 
-    # Room for one reply. The endpoint's own default (4k) truncates a multi-day
-    # itinerary mid-JSON, which reads downstream as a syntax error. Raise this before
-    # blaming the model for malformed output on long trips.
+    # Room for one reply. The endpoint's own default (4k) truncates a multi-day itinerary
+    # mid-JSON, which reads downstream as a syntax error.
     llm_max_output_tokens: int = 16384
 
     # Bound on the function-calling loop, so a confused model cannot spin forever.
     max_tool_rounds: int = 4
 
-    # User memory. SQLite for now; Phase 4 moves it into PostgreSQL behind the same
-    # PreferenceStore interface.
+    # One file per store, so each can move to Postgres on its own schedule -- and the one
+    # holding credentials can be backed up differently.
     memory_db_path: str = "wandergent-memory.db"
-    # Shared itineraries. Its own file rather than a second schema inside the
-    # memory database: each store owns its file, so either can move to Postgres
-    # on its own schedule.
     community_db_path: str = "wandergent-community.db"
-    # Accounts and live sessions. Separate again: this is the one store whose
-    # contents are credentials, and keeping it in its own file makes "back this up
-    # differently" and "move this first" possible without touching the others.
     auth_db_path: str = "wandergent-auth.db"
 
-    # The ceiling on what this service may spend in a day, counted in planning
-    # runs because that is the only thing here that costs money -- several LLM
-    # calls plus Places and Routes quota each.
-    #
-    # A *setting* rather than a constant because it is a budget, and only the
-    # person paying knows the number. The default is deliberately small: the
-    # failure mode of too low is a refused request, and of too high is a bill.
+    # The only ceiling on the daily bill, counted in planning runs because they are the
+    # one thing here that costs money. A setting, not a constant: only the person paying
+    # knows the number.
     max_plans_per_day: int = 200
 
-    # Mail, for password reset. Empty host means "not configured", and the reset
-    # code is written to the log instead of sent -- which makes the flow work on a
-    # laptop and is announced loudly at boot, because a server that believes it is
-    # emailing people while printing their codes to stdout is a security problem.
-    #
-    # No default for the password, same rule as every other secret.
+    # Mail, for password reset. Empty host means not configured: the reset code goes to
+    # the log instead of an inbox, which works on a laptop and is announced loudly at
+    # boot. No default for the password, same rule as every other secret.
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from: str = ""
 
-    # Shown in the reset email so the recipient can tell which service sent it.
-    # Someone who did not request a reset needs to know what to ignore.
+    # Shown in the reset email so a recipient who did not ask for one knows what to
+    # ignore.
     public_name: str = "Wandergent"
-
-    # Filled in later stages (placeholders, not required now).
-    database_url: str = ""
-    redis_url: str = ""
 
 
 settings = Settings()
