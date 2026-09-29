@@ -57,3 +57,5 @@ docs/eval-runs/
 
 # ---- JVM crash logs ----
 hs_err_pid*.log
+docs/
+AGENTS.md
