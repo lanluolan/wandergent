@@ -7,12 +7,7 @@ import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
-/**
- * The community feed.
- *
- * Ordinary CRUD, and fast by this app's standards -- none of these touch the model, so
- * they finish in milliseconds rather than the minutes a planning run takes.
- */
+/** The community feed. Plain CRUD -- none of it touches the model, so all of it is fast. */
 interface CommunityApi {
 
     @POST("community/plans")

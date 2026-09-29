@@ -7,9 +7,9 @@ import retrofit2.http.POST
 /**
  * Accounts and sessions.
  *
- * The token these return is the only thing that establishes identity anywhere in this
- * app. It travels in the `Authorization` header, attached by [Network]'s interceptor --
- * never in a query string, which would put it in the server's access log.
+ * The token these return is the only thing that establishes identity in this app. It
+ * rides in the `Authorization` header via [Network]'s interceptor -- never in a query
+ * string, which the server would log.
  */
 interface AuthApi {
 
@@ -27,12 +27,7 @@ interface AuthApi {
     @GET("auth/me")
     suspend fun me(): AccountDto
 
-    /**
-     * Ask for a reset code.
-     *
-     * Always 204, whether or not the address belongs to an account -- so the client
-     * cannot report "no such address" either, and must not pretend to.
-     */
+    /** Ask for a reset code. Always 204, so the client cannot report "no such address". */
     @POST("auth/reset/request")
     suspend fun requestReset(@Body request: ResetRequestDto)
 

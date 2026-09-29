@@ -16,10 +16,7 @@ import retrofit2.converter.kotlinx.serialization.asConverterFactory
  */
 object ApiJson {
 
-    /**
-     * `ignoreUnknownKeys` matters: the backend gains fields as phases land (Phase 2 adds
-     * streaming metadata), and an older client must not crash on a newer server.
-     */
+    /** `ignoreUnknownKeys`: the backend gains fields, and an older client must not crash. */
     val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -35,36 +32,23 @@ object ApiJson {
 /**
  * Single Retrofit instance for the app.
  *
- * Deliberately a plain object rather than Hilt: Phase 1 has one screen and one
- * ViewModel, so a DI container would be scaffolding around a single construction site.
- * Hilt lands in Phase 2 when there is a second screen -- see docs/decisions.md.
+ * A plain object rather than Hilt: everything here is built once, at process start, and
+ * nothing needs a scope. See docs/decisions.md.
  */
 object Network {
 
     /**
      * The bearer token for the signed-in account, or null.
      *
-     * Held here as plain state rather than injected, for the same reason [ServerConfig]
-     * is: OkHttp builds its interceptor chain once, and every request has to see the
-     * *current* value. Set by the auth layer on sign-in and cleared on sign-out.
+     * Mutable state rather than a constructor argument: OkHttp builds its interceptor
+     * chain once, and every request has to see the current value.
      */
     @Volatile
     var authToken: String? = null
 
     /**
-     * The traveller's own LLM account, or [LlmCredentials.NONE] to use the backend's.
-     *
-     * Volatile global for the same reason [authToken] is: the interceptor chain is built
-     * once and every request has to see the current value.
-     */
-    @Volatile
-    var llmCredentials: LlmCredentials = LlmCredentials.NONE
-
-    /**
-     * Called when the server rejects a token we attached.
-     *
-     * A lambda rather than a dependency on the session store, so the network layer stays
-     * ignorant of DataStore and Room. Set by the auth layer at startup.
+     * Called when the server rejects a token we attached. A lambda, so this layer never
+     * has to know about DataStore or Room.
      */
     @Volatile
     var onUnauthorized: (() -> Unit)? = null
@@ -72,9 +56,8 @@ object Network {
     /**
      * Attaches the session to every request that does not already carry one.
      *
-     * Unconditional rather than per-endpoint: the alternative is remembering to add it,
-     * and the failure mode of forgetting is a request that silently acts as a stranger.
-     * Endpoints that do not need it simply ignore it.
+     * Unconditional rather than per-endpoint: forgetting one would silently send it as a
+     * stranger. Endpoints that do not need it ignore it.
      */
     private val authenticate = Interceptor { chain ->
         val token = authToken
@@ -87,32 +70,13 @@ object Network {
         }
 
         val response = chain.proceed(request)
-        // Only when *we* supplied the token, and never for the auth endpoints themselves:
-        // a 401 from `/auth/login` means "wrong password", not "your session died", and
-        // treating it as the latter would sign people out for a typo.
+        // Never for `/auth/*`: a 401 there means "wrong password", not "session died",
+        // and signing people out for a typo would be the worse failure.
         if (response.code == 401 && attached && !request.url.encodedPath.startsWith("/auth/")) {
             authToken = null
             onUnauthorized?.invoke()
         }
         response
-    }
-
-    /**
-     * Attaches the traveller's own LLM key, when [LlmCredentials.headersFor] says it may
-     * be attached at all. The rules live there; this only applies them.
-     */
-    private val attachLlmKey = Interceptor { chain ->
-        val request = chain.request()
-        val headers = llmCredentials.headersFor(request.url)
-        if (headers.isEmpty()) {
-            chain.proceed(request)
-        } else {
-            chain.proceed(
-                request.newBuilder()
-                    .apply { headers.forEach { (name, value) -> header(name, value) } }
-                    .build()
-            )
-        }
     }
 
     /** Shared with [DayMapClient], so timeouts and logging are configured in one place. */
@@ -123,13 +87,12 @@ object Network {
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .addInterceptor(authenticate)
-        .addInterceptor(attachLlmKey)
         .apply {
             if (BuildConfig.DEBUG) {
                 addInterceptor(
-                    // BASIC on purpose, not just for brevity: HEADERS and BODY would
-                    // print `X-LLM-Api-Key`, and a debug log is the easiest place in
-                    // the system to leak a traveller's key from.
+                    // BASIC on purpose, not just for brevity: HEADERS would print the
+                    // session bearer token, and a debug log is the easiest place in the
+                    // system to leak a credential from.
                     HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
                 )
             }
@@ -144,13 +107,9 @@ object Network {
         .create(PlanApi::class.java)
 
     /**
-     * Its own client rather than sharing the planner's.
-     *
-     * [httpClient]'s 120-second read timeout is sized for a run that makes several LLM
-     * calls. Nothing on the community feed touches the model, so inheriting that would
-     * leave someone watching a spinner for two minutes when the server is simply down.
-     * The builder is derived from [httpClient], so the auth interceptor, the
-     * connection pool and debug logging are all still shared.
+     * Derived from [httpClient] -- same interceptors and connection pool, shorter read
+     * timeout. Nothing here or on [communityApi] touches the model, so 120s would mean a
+     * two-minute spinner when the server is simply down.
      */
     val authApi: AuthApi = Retrofit.Builder()
         .baseUrl(ServerConfig.baseUrl)
@@ -165,4 +124,11 @@ object Network {
         .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(CommunityApi::class.java)
+
+    val preferenceApi: PreferenceApi = Retrofit.Builder()
+        .baseUrl(ServerConfig.baseUrl)
+        .client(httpClient.newBuilder().callTimeout(20, TimeUnit.SECONDS).build())
+        .addConverterFactory(ApiJson.json.asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(PreferenceApi::class.java)
 }

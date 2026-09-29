@@ -13,19 +13,16 @@ android {
         applicationId = "com.wandergent.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Reached over an adb reverse tunnel: `adb reverse tcp:8000 tcp:8000` makes the
-        // device's own 127.0.0.1:8000 forward to the host's. That works for a USB
-        // device and an emulator alike, needs no shared Wi-Fi, no host IP lookup, and
-        // no inbound firewall hole -- so the backend can stay bound to loopback.
-        //
-        // The one case it does not cover is a phone with no cable, and a deployed
-        // backend later. Both are rebuilds rather than a setting: shipping an address
-        // field in a travel app's profile screen advertises a dev build to every user
-        // to spare the developer one flag. Override with
-        // `-Pwandergent.serverUrl=192.168.1.10:8000`.
+        // The default is reached over `adb reverse tcp:8000 tcp:8000`, which works for a
+        // USB device and an emulator alike and needs no shared Wi-Fi, host IP lookup or
+        // inbound firewall hole -- so the backend can stay bound to loopback. A cable-less
+        // phone or a deployed backend is a rebuild rather than a setting: shipping an
+        // address field in a travel app advertises a dev build to every user. Override
+        // with `-Pwandergent.serverUrl=192.168.1.10:8000`.
         val serverUrl = (findProperty("wandergent.serverUrl") as String?)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
@@ -68,8 +65,6 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     implementation(libs.compose.ui)
-    implementation(libs.compose.ui.tooling.preview)
-    debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.retrofit)
     implementation(libs.retrofit.serialization)
@@ -84,4 +79,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test.junit)
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

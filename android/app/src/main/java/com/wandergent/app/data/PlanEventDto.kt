@@ -6,13 +6,9 @@ import kotlinx.serialization.json.JsonObject
 /**
  * One event from `POST /plan/stream`, mirroring `app/agent/events.py`.
  *
- * Flat rather than a sealed hierarchy, matching the backend: `type` says which fields
- * are meaningful, and everything else is nullable. A sealed class with a polymorphic
- * discriminator would buy type-safety at the cost of a custom serializer, for six
- * event kinds that each carry two or three fields.
- *
- * Unknown `type` values are ignored by the consumer rather than treated as errors, so
- * a newer backend can add event kinds without breaking older clients.
+ * Flat rather than a sealed hierarchy, matching the backend: `type` says which fields are
+ * meaningful and everything else is nullable. Unknown types are ignored by the consumer,
+ * so a newer backend can add event kinds without breaking this client.
  */
 @Serializable
 data class PlanEventDto(
@@ -42,15 +38,12 @@ data class PlanEventDto(
 /**
  * What a run warning should say to the person reading the plan.
  *
- * The three budget codes collapse into one sentence on purpose. Which ceiling the run
- * hit -- calls dropped mid-round, calls spent exactly, rounds spent -- is a real
- * distinction to whoever is tuning the tool loop and no distinction at all to someone
- * deciding whether to double-check a closing time. The codes stay separate on the wire
- * so the backend keeps that detail; only this rendering flattens them.
+ * The three budget codes collapse into one sentence: which ceiling the run hit matters to
+ * whoever tunes the tool loop, not to someone deciding whether to check a closing time.
+ * They stay separate on the wire; only this rendering flattens them.
  *
- * Unknown codes fall through to `detail`. It is developer wording, which is the thing
- * this function exists to stop showing -- but a blank line where a caveat belongs is
- * worse, and a client older than the server is the only way to get here.
+ * Unknown codes fall through to `detail` -- developer wording, but better than a blank
+ * line where a caveat belongs.
  */
 fun warningText(warning: RunWarning): String = when (warning.code) {
     "tool_calls_dropped", "tool_calls_spent", "tool_rounds_spent" ->
@@ -60,16 +53,24 @@ fun warningText(warning: RunWarning): String = when (warning.code) {
 }
 
 /**
+ * What a tool call is doing, in the traveller's words. Shared by the live progress line
+ * and the finished plan's tool list, so the two cannot drift.
+ */
+fun toolLabel(name: String, subject: String? = null): String = when (name) {
+    "get_weather_forecast" ->
+        subject?.let { "Checking the forecast for $it" } ?: "Checking the forecast"
+    "remember_preference" -> "Remembering your preference"
+    "search_places" -> "Finding places to go"
+    "get_travel_time" -> "Checking travel times"
+    else -> name
+}
+
+/**
  * What a failed tool call should say to the person reading the plan.
  *
- * Same split as [warningText], for the same reason and after the same failure: the
- * backend's `error` is written for the model and quotes upstream, so a weather lookup
- * that 400ed showed the traveller the full Open-Meteo URL and a link to MDN's page on
- * HTTP 400. The backend now sends a code and the sentence is written here.
- *
- * `legacy` is the old field, still present on trips saved before the change. Showing it
- * is worse than showing nothing only in theory -- in practice a saved trip with no
- * explanation at all is worse, and those sentences were at least accurate.
+ * Same split as [warningText]: the backend's `error` was written for the model and quoted
+ * upstream URLs at the traveller, so it now sends a code and the sentence is written here.
+ * `legacy` is that old field, kept so trips saved before the change still say something.
  */
 fun toolFailureText(code: String?, legacy: String? = null): String = when (code) {
     "not_configured" -> "not set up on this server"

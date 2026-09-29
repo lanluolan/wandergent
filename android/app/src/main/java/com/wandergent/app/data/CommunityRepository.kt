@@ -6,10 +6,8 @@ import retrofit2.HttpException
 /**
  * One community request, already turned into something a screen can render.
  *
- * Failures come back as a value rather than an exception because every caller here is a
- * ViewModel handling a tap: nothing above this layer wants a try/catch, and a feed that
- * cannot load has to show *why* rather than an empty list that looks like "nobody has
- * shared anything yet".
+ * A value rather than an exception: every caller is a ViewModel handling a tap, and a
+ * feed that cannot load has to say *why* rather than look empty.
  */
 sealed interface CommunityOutcome<out T> {
     data class Success<T>(val value: T) : CommunityOutcome<T>
@@ -20,15 +18,10 @@ sealed interface CommunityOutcome<out T> {
 /**
  * What of the original request, if anything, travels with a shared trip.
  *
- * **Defaults to nothing, and that default is the point.** The request is the free-text
- * sentence the traveller typed, and it is where people put the private half of a trip --
- * "honeymoon", "my mother cannot manage stairs", "budget is tight since the move", the
- * names of whoever is coming. It was being published verbatim and rendered to every
- * reader as "Original request: ...", while the share dialog promised only that the
- * destination and the display name would be visible.
- *
- * The itinerary already says what the trip is. The sentence that produced it is worth far
- * less to a reader than it can cost its author.
+ * **Defaults to nothing, and that default is the point.** The free-text request is where
+ * the private half of a trip ends up -- health, money, who is coming. The itinerary
+ * already says what the trip is; the sentence that produced it can cost its author more
+ * than it is worth to a reader.
  */
 internal fun sharedRequest(request: String, include: Boolean): String =
     if (include) request.trim() else ""
@@ -63,9 +56,8 @@ class CommunityRepository(private val api: CommunityApi = Network.communityApi) 
             CommunityOutcome.Failure(
                 when (e.code()) {
                     429 -> tooManyRequests(detail, e.retryAfterSeconds())
-                    // The server returns this for "gone" and "not yours" alike, and the
-                    // client cannot tell them apart either -- so say the part that is
-                    // true in both cases.
+                    // The server returns this for "gone" and "not yours" alike, so say
+                    // the part that is true in both cases.
                     404 -> detail ?: "That plan is no longer shared."
                     422 -> detail ?: "The server rejected that."
                     else -> "Request failed (HTTP ${e.code()})${detail?.let { ": $it" } ?: ""}"

@@ -9,15 +9,12 @@ import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
 /**
- * The local half of an account.
+ * The local half of an account: a storage partition, not an identity. The library, the
+ * transcript and the currency setting are all keyed on [id]; [serverAccountId] says whose
+ * they are.
  *
- * **No password material lives here any more** (2026-08-17). Verification happens on the
- * server against PBKDF2, and the columns that used to hold a local salt and SHA-256 hash
- * were dropped in the v5 -> v6 migration rather than left behind: a dead credential column
- * is a live vulnerability the day somebody reinstates a "quick offline login" against it.
- *
- * What remains is a storage partition. The library, the transcript and the currency
- * setting are all keyed on [id]; [serverAccountId] says whose they are.
+ * **No password material lives here** (2026-08-17). The server verifies against PBKDF2,
+ * and the old salt and hash columns were dropped in v5 -> v6 rather than left dead.
  */
 @Entity(
     tableName = "users",
@@ -28,21 +25,11 @@ data class UserEntity(
     val username: String,
     val displayName: String,
     /**
-     * The server account this local row belongs to.
-     *
-     * Identity lives on the server now; this row exists only to *partition local
-     * storage* -- the library, the transcript, the currency setting are all keyed on
-     * [id], and a `Long` row id is cheaper to key on than a uuid across three tables.
-     *
-     * Blank on rows written before accounts moved server-side. Those are adopted by the
-     * first server login that matches their username.
+     * The server account this local row belongs to. Blank on rows written before accounts
+     * moved server-side; the first login matching their username adopts those.
      */
     val serverAccountId: String = "",
-    /**
-     * Mirrored from the server so the profile can say whether this account is
-     * recoverable without a round trip on every open. The server is the authority --
-     * this is a cache, refreshed on sign-in and whenever the address changes.
-     */
+    /** Mirrored from the server. A cache, refreshed on sign-in; the server decides. */
     val email: String = "",
     val emailVerified: Boolean = false,
     val createdAt: Long,

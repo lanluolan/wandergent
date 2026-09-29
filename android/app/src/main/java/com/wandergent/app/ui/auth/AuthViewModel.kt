@@ -35,9 +35,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         // Re-arm the interceptor from the persisted token and check the server still
-        // honours it. Without this a revoked or expired session keeps being sent until
-        // something fails, and the failure lands on whatever the traveller happened to
-        // tap rather than at launch where it can be handled.
+        // honours it, so a dead session fails at launch rather than mid-tap.
         viewModelScope.launch { repository.restore() }
 
         // A session the server rejects mid-use ends here rather than surfacing as a
@@ -63,10 +61,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         submit { repository.register(username, password, displayName, email) }
 
     /**
-     * Ask for a reset code, and report only that the request went through.
-     *
-     * Deliberately *not* "we sent you a code": the server answers the same whether or not
-     * the address has an account, and saying more here would leak what it withheld.
+     * Ask for a reset code, and report only that the request went through -- deliberately
+     * not "we sent you a code", which would leak what the server withheld.
      */
     fun requestReset(email: String) = submit(
         onSuccess = { _notice.value = "If that address has an account, a code is on its way." },
@@ -84,6 +80,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _notice.value = null
     }
 
+    // The next three have no caller: the profile's Email row came out with the rest of
+    // that screen and is being rebuilt. Kept deliberately, not overlooked.
     fun verifyEmail(code: String) = submit(
         onSuccess = { _notice.value = "Email confirmed. You can reset your password with it now." },
     ) { repository.verifyEmail(code) }

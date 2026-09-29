@@ -24,10 +24,8 @@ class PlanStreamClient(private val baseUrl: () -> String = { ServerConfig.baseUr
     /** Injectable so tests can point it somewhere; in the app it is the built-in address. */
     private fun url() = baseUrl().trimEnd('/') + "/plan/stream"
 
-    // Derived from the shared client rather than built fresh, so it inherits the
-    // interceptors -- in particular the one that attaches the session. Built standalone
-    // it silently streamed every plan as an anonymous caller even when signed in, which
-    // looks like working software and quietly loses the traveller's preferences.
+    // Derived from the shared client so it inherits the interceptors -- in particular the
+    // one that attaches the session. Built fresh, it streamed every plan anonymously.
     private val client = Network.httpClient.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         // The timeout applies between events, not to the whole stream. Generous enough

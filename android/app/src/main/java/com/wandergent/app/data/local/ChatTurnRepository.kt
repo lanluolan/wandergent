@@ -14,18 +14,14 @@ data class StoredTurn(
 /**
  * The planning conversation, across restarts.
  *
- * Separate from [SavedPlanRepository] because the two mean different things: saving is
- * a deliberate "keep this trip", while this is the working state of the current
- * conversation. Conflating them would either fill the library with drafts or lose the
- * draft you were editing.
+ * Separate from [SavedPlanRepository]: saving is a deliberate "keep this trip", this is
+ * the working state of the current conversation.
  */
 class ChatTurnRepository(private val dao: ChatTurnDao) {
 
     /**
-     * Restore the conversation, oldest first.
-     *
-     * Rows that no longer decode are dropped rather than thrown: a plan stored before a
-     * breaking model change must not stop the app from opening.
+     * Restore the conversation, oldest first. Rows that no longer decode are dropped: a
+     * plan stored before a breaking model change must not stop the app from opening.
      */
     suspend fun restore(userId: Long): List<StoredTurn> =
         dao.forUser(userId).mapNotNull { row ->

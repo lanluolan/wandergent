@@ -9,12 +9,7 @@ class SavedPlanRepository(private val dao: SavedPlanDao) {
 
     fun observeFor(userId: Long): Flow<List<SavedPlanEntity>> = dao.observeFor(userId)
 
-    /**
-     * Hand pre-account rows to this user. Call once when a library is first opened.
-     *
-     * Returns how many were adopted, so the screen can say what happened rather than
-     * silently growing by five entries.
-     */
+    /** Hand pre-account rows to this user, and say how many. Call once per library open. */
     suspend fun adoptLegacy(userId: Long): Int =
         if (userId == SavedPlanEntity.LEGACY_USER) 0 else dao.adoptLegacy(userId)
 
@@ -30,11 +25,8 @@ class SavedPlanRepository(private val dao: SavedPlanDao) {
         sharedPlanId: String? = null,
     ): Boolean {
         val itinerary = response.itinerary ?: return false
-        // Copying the same community post twice is a no-op, not a second row. The
-        // server's save is keyed on (plan, user) and is already idempotent; without this
-        // the library was not, so save -> unsave -> save left two identical trips.
-        // Matching on the post's identity rather than on contents keeps the legitimate
-        // case working: delete your copy, save it again, get it back.
+        // Copying the same post twice is a no-op, not a second row -- see
+        // [SavedPlanEntity.sharedPlanId].
         if (sharedPlanId != null && dao.findShared(userId, sharedPlanId) != null) return true
         dao.insert(
             SavedPlanEntity(
@@ -57,11 +49,8 @@ class SavedPlanRepository(private val dao: SavedPlanDao) {
     suspend fun delete(plan: SavedPlanEntity) = dao.delete(plan)
 
     /**
-     * Put a deleted plan back, id and all.
-     *
-     * Room binds a non-zero primary key as given even with `autoGenerate`, so an undo
-     * restores the same row rather than a copy -- which matters because the list is
-     * keyed on the id.
+     * Put a deleted plan back, id and all. Room binds a non-zero primary key as given even
+     * with `autoGenerate`, so an undo restores the same row -- the list is keyed on that id.
      */
     suspend fun restore(plan: SavedPlanEntity) {
         dao.insert(plan)

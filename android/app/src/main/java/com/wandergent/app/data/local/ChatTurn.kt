@@ -7,17 +7,12 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 
 /**
- * One completed round of the planning conversation, kept across restarts.
+ * One completed round of the planning conversation, kept across restarts. Since a
+ * follow-up edits the plan above it, losing the transcript loses **the plan you were
+ * about to change**, not just the history.
  *
- * **Only finished rounds are stored.** A run that was still streaming when the process
- * died is not resumable -- there is no server-side session to reattach to -- so
- * persisting it would restore a spinner that never stops. Failures are not stored
- * either: a restored error is noise, and the request that caused it is still visible
- * above it if the user wants to try again.
- *
- * This exists because of what revision made it cost. Losing the transcript used to mean
- * losing chat history; since a follow-up edits the plan above it, losing the transcript
- * means losing **the plan you were about to change**.
+ * **Only finished rounds are stored.** A stream cannot be reattached to, so persisting one
+ * would restore a spinner that never stops; a restored error would be noise.
  */
 @Entity(tableName = "chat_turns")
 data class ChatTurnEntity(
@@ -33,11 +28,8 @@ data class ChatTurnEntity(
 ) {
     companion object {
         /**
-         * How many rounds to keep and restore per account.
-         *
-         * Bounded because each row is a full itinerary: unbounded, a heavy user restores
-         * a hundred plans into a lazy list on launch and decodes them to draw the first.
-         * Ten is far more history than anyone scrolls back through while editing.
+         * How many rounds to keep and restore per account. Bounded because each row is a
+         * full itinerary, and ten is more than anyone scrolls back through while editing.
          */
         const val KEEP = 10
     }

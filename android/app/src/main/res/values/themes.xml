@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The window the app is drawn into, as opposed to the Compose theme drawn inside it.
-
-  Everything visual is Compose's job except this: the frame the system puts on screen before
-  the first frame exists. It used to be the platform's own `Theme.Material.Light.NoActionBar`,
-  whose window background is white, so every cold start flashed white and then repainted.
+  The window the app is drawn into, as opposed to the Compose theme drawn inside it: the
+  frame the system shows before Compose's first frame exists. The platform's own
+  `Theme.Material.Light.NoActionBar` has a white window background, so every cold start
+  used to flash white and then repaint.
 -->
 <resources>
     <style name="Theme.Wandergent" parent="@android:style/Theme.Material.Light.NoActionBar">

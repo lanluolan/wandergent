@@ -4,6 +4,7 @@ import com.wandergent.app.data.PlanEventDto
 import com.wandergent.app.data.Violation
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -82,18 +83,71 @@ class LiveProgressTest {
     }
 
     @Test
-    fun `place names accumulate but are capped`() {
-        // The cap is why the screen shows momentum instead of turning into a log.
-        val events = (1..LiveProgress.MAX_WRITING + 4).map {
+    fun `each composing event replaces the line rather than accumulating`() {
+        // There is one line of space under the progress bar. This used to be a growing
+        // list of every place name written, which is a log, not a progress report.
+        val events = (1..5).map {
             PlanEventDto(type = PlanEventDto.COMPOSING, message = "place $it")
         }
 
         val progress = fold(*events.toTypedArray())
 
-        assertEquals(LiveProgress.MAX_WRITING, progress.writing.size)
-        // The newest survive, not the oldest: this is a running view, not a transcript.
-        assertEquals("place ${LiveProgress.MAX_WRITING + 4}", progress.writing.last())
-        assertEquals("place 5", progress.writing.first())
+        assertEquals("Scheduling place 5", progress.detail)
+        assertFalse(progress.detailIsProblem)
+    }
+
+    @Test
+    fun `a tool call names itself on the line and a success leaves it alone`() {
+        val progress = fold(
+            call("search_places"),
+            result("search_places", ok = true),
+        )
+
+        // "done" would only push the next real update out by a beat.
+        assertEquals("Finding places to go", progress.detail)
+        assertFalse(progress.detailIsProblem)
+    }
+
+    @Test
+    fun `a failed tool says so on the line, in the traveller's words`() {
+        val progress = fold(
+            call("get_weather_forecast"),
+            result("get_weather_forecast", ok = false, code = "timed_out"),
+        )
+
+        // The code is the contract; the sentence is written client-side. The plan carries
+        // on without the forecast, so this is the one tool outcome worth a line.
+        assertEquals("Checking the forecast: took too long", progress.detail)
+        assertTrue(progress.detailIsProblem)
+    }
+
+    @Test
+    fun `validation puts the count and the first findings on the line`() {
+        val progress = fold(
+            PlanEventDto(
+                type = PlanEventDto.VALIDATION,
+                violations = listOf(
+                    Violation(code = "over_budget", message = "over by 200"),
+                    Violation(code = "insufficient_transfer", message = "12 minutes short"),
+                    Violation(code = "empty_day", message = "day 3 is empty"),
+                ),
+            ),
+        )
+
+        // Two named, not all three: one line, and the count already says there are more.
+        assertEquals("Fixing 3 problems: over budget, not enough travel time", progress.detail)
+        assertTrue(progress.detailIsProblem)
+    }
+
+    @Test
+    fun `a clean validation is worth saying out loud, verdict first`() {
+        val progress = fold(PlanEventDto(type = PlanEventDto.VALIDATION, violations = emptyList()))
+
+        // The line is one line and it truncates. Seen on a live run: "Budget, timing and
+        // routing all check out" arrived as "...all check ...", losing the only word that
+        // answered the question. Whatever survives the cut has to be the verdict.
+        assertEquals("All clear - budget, timing and routing", progress.detail)
+        assertFalse(progress.detailIsProblem)
     }
 
     @Test

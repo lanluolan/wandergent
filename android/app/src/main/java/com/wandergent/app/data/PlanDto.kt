@@ -33,12 +33,10 @@ data class PlanRequest(
      */
     val currency: String = "",
     /**
-     * An itinerary to **revise** rather than replace.
+     * An itinerary to **revise** rather than replace; null asks for a new plan.
      *
-     * Sent by us because the backend is stateless and we already hold the plan being
-     * changed. The revision runs the same validate-repair-revalidate cycle as a fresh
-     * plan, so an edit cannot quietly bust the budget or leave no time to get anywhere.
-     * Null asks for a brand-new plan.
+     * Sent by us because the backend is stateless. A revision runs the same
+     * validate-repair-revalidate cycle, so an edit cannot quietly bust the budget.
      */
     val previous: Itinerary? = null,
 )
@@ -55,13 +53,9 @@ data class PlanResponse(
 /**
  * Something the run could not finish, as a code plus the numbers behind it.
  *
- * Not a sentence. The backend used to send one, and it was a sentence written for
- * whoever wrote the tool loop: travellers were shown `reached the 16-call tool budget;
- * skipped 3 further call(s) to search_places`. The wording belongs here, where we know
- * who is reading, and `detail` is only the fallback for a code this build predates.
- *
- * Deliberately `String`, not an enum: an unrecognised code has to render as *something*,
- * not throw, because the server ships ahead of the app.
+ * A code, not a sentence: the wording belongs on this side, where we know who is reading.
+ * `detail` is only the fallback for a code this build predates. `String` rather than an
+ * enum, because the server ships ahead of the app and an unknown code must not throw.
  */
 @Serializable
 data class RunWarning(
@@ -80,11 +74,9 @@ data class RunWarning(
 /**
  * Reads a warning that is either an object or a bare string.
  *
- * The string form is what saved plans in Room already hold: `planJson` is the response
- * verbatim, so every trip in the library predating this change would otherwise fail to
- * parse and disappear from the list. `ignoreUnknownKeys` covers a *new field*; nothing
- * covers a changed type but this. Legacy entries keep their old developer wording,
- * because that is genuinely all that was stored -- there is nothing to upgrade them to.
+ * Room stores the response verbatim, so trips saved before warnings gained codes hold the
+ * string form and would otherwise vanish from the library. `ignoreUnknownKeys` covers a
+ * new field; only this covers a changed type.
  */
 object TolerantRunWarning : JsonTransformingSerializer<RunWarning>(RunWarning.serializer()) {
     override fun transformDeserialize(element: JsonElement): JsonElement =
@@ -102,9 +94,8 @@ object TolerantRunWarning : JsonTransformingSerializer<RunWarning>(RunWarning.se
  * Outcome of the server-side hard-constraint check. Anything left in `blocking`
  * survived a repair attempt, so the UI must not imply the itinerary is sound.
  *
- * `advisory` findings are different: they are remarks about pace -- a long day, a late
- * finish -- which are the traveller's own call and were deliberately never enforced.
- * Showing them in red would mean scolding someone for the trip they asked for.
+ * `advisory` findings are remarks about pace -- a long day, a late finish -- which are
+ * the traveller's own call and were never enforced, so they are not drawn as failures.
  */
 @Serializable
 data class ValidationReport(val violations: List<Violation> = emptyList()) {
@@ -113,11 +104,7 @@ data class ValidationReport(val violations: List<Violation> = emptyList()) {
     val ok: Boolean get() = blocking.isEmpty()
 }
 
-/**
- * Mirrors `ADVISORY_CODES` in the backend's `app/agent/validation.py`. Duplicated rather
- * than sent on the wire because the *code* is the stable contract and this is a display
- * decision; if the two ever drift, the header still comes from the backend's own list.
- */
+/** Mirrors `ADVISORY_CODES` in `app/agent/validation.py`; the code is the stable contract. */
 private val ADVISORY_CODES = setOf("overlong_day", "unsociable_hours")
 
 @Serializable
@@ -135,7 +122,9 @@ data class Itinerary(
     @SerialName("start_date") val startDate: String,
     @SerialName("end_date") val endDate: String,
     val travelers: Int = 1,
-    val currency: String = "CNY",
+    // Mirrors the backend `Itinerary.currency` default; both only apply when a plan
+    // arrives without the field. Change one and change the other.
+    val currency: String = "USD",
     val budget: Double? = null,
     val days: List<DayPlan> = emptyList(),
     val notes: List<String> = emptyList(),
@@ -168,10 +157,8 @@ data class Activity(
 /**
  * One tool the agent invoked. `arguments` is free-form, so it stays raw JSON.
  *
- * `code` says what kind of failure; the wording for it lives on this side. `error` is
- * what the backend used to send instead -- its own developer sentence, upstream URLs and
- * all -- and is kept only so trips saved before the change still open. Room stores the
- * response verbatim, so dropping the field would make those fail to parse.
+ * `code` says what kind of failure; the wording lives on this side. `error` is the old
+ * developer sentence, kept only so trips saved before the change still parse.
  */
 @Serializable
 data class ToolCallRecord(

@@ -1,6 +1,7 @@
 package com.wandergent.app.ui
 
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.graphics.Bitmap
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -41,12 +42,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -73,16 +78,13 @@ private const val DOUBLE_TAP_ZOOM = 2.5f
 /**
  * One day's stops as a real map, in a WebView.
  *
- * **Why a WebView and not the Maps SDK for Android**: that SDK hard-requires Google Play
- * services, which the test device does not have. The JavaScript API needs only a
- * Chromium, so this is the one route to pan-and-zoom on that hardware. The page comes
- * from our backend, which injects the key -- nothing map-related ships in the APK.
+ * **Not the Maps SDK for Android**: that hard-requires Play services, which the test
+ * device does not have. The JavaScript API needs only a Chromium, and the page comes from
+ * our backend, which injects the key -- nothing map-related ships in the APK.
  *
- * The device's WebView is old (Chrome 62 on the test phone, un-updatable without the
- * Play Store), so failures are expected on some hardware and are handled rather than
- * assumed away: JS console output goes to logcat under [TAG], and a page that cannot
- * load says so instead of showing an empty rectangle. The static image remains the
- * thing the day card shows; this is the tap-through.
+ * An old WebView (Chrome 62 on the test phone) is expected, so failures are handled rather
+ * than assumed away: JS console output goes to logcat under [TAG], and a page that cannot
+ * load falls back to the static image instead of showing an empty rectangle.
  */
 @Composable
 fun InteractiveMapDialog(
@@ -91,6 +93,9 @@ fun InteractiveMapDialog(
     title: String,
     externalUrl: String?,
     onDismiss: () -> Unit,
+    loadStillMap: suspend (List<String>) -> Bitmap? = {
+        DayMapClient.load(it, widthPx = 640, heightPx = 640)
+    },
 ) {
     val context = LocalContext.current
     Dialog(
@@ -98,24 +103,31 @@ fun InteractiveMapDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            var loading by remember { mutableStateOf(true) }
-            var failure by remember { mutableStateOf<String?>(null) }
+            var loading by remember(url) { mutableStateOf(true) }
+            var failure by remember(url) { mutableStateOf<String?>(null) }
             var webView by remember { mutableStateOf<WebView?>(null) }
             // null while the answer is still unknown; false once the embedded map has
             // been proven not to work on this engine.
-            var embeddedWorks by remember { mutableStateOf<Boolean?>(null) }
+            var embeddedWorks by remember(url) { mutableStateOf<Boolean?>(null) }
 
-            // Ask the page itself whether the API is alive, rather than trusting that a
-            // loaded page means a working map. On an old WebView the bundle downloads,
-            // throws inside itself, and leaves `google.maps` undefined -- an HTTP-level
-            // success and a visual failure. Probing is what turns that into a fallback
-            // instead of a dead end.
+            // Bound a stalled main document too: onPageFinished may never arrive.
+            LaunchedEffect(url) {
+                delay(25_000L)
+                if (embeddedWorks == null) {
+                    loading = false
+                    embeddedWorks = false
+                }
+            }
+
+            // Ask the page whether the API is alive rather than trusting that a loaded
+            // page means a working map: on an old WebView the bundle downloads, throws
+            // inside itself, and leaves `google.maps` undefined.
             LaunchedEffect(loading, webView) {
                 val view = webView ?: return@LaunchedEffect
-                if (loading) return@LaunchedEffect
+                if (loading || embeddedWorks == false) return@LaunchedEffect
                 delay(PROBE_DELAY_MS)
                 view.evaluateJavascript(
-                    "(typeof google !== 'undefined' && !!(google && google.maps))",
+                    "window.wandergentMapReady === true",
                 ) { result ->
                     embeddedWorks = result == "true"
                     if (result != "true") Log.w(TAG, "embedded map unavailable; using the image")
@@ -125,11 +137,12 @@ fun InteractiveMapDialog(
             val openExternally = openExternally@{
                 val target = externalUrl ?: return@openExternally
                 val intent = Intent(Intent.ACTION_VIEW, target.toUri())
-                // Nothing on the phone has to be able to handle it: a device with no
-                // browser and no map app is a real configuration, and crashing on it
-                // would be worse than the map simply not opening.
-                runCatching { context.startActivity(intent) }
-                    .onFailure { Log.w(TAG, "no app could open $target") }
+                // A device with no browser and no map app is a real configuration.
+                try {
+                    context.startActivity(intent)
+                } catch (e: ActivityNotFoundException) {
+                    failure = "No browser or maps app is available to open directions."
+                }
             }
 
             Column(Modifier.fillMaxSize()) {
@@ -154,13 +167,6 @@ fun InteractiveMapDialog(
                 }
 
                 Box(Modifier.fillMaxSize()) {
-                    if (embeddedWorks == false) {
-                        // Proven not to work on this engine. A still map you can pinch
-                        // and drag is a poorer map than a live one, and a far better
-                        // screen than an apology -- the stops, the order and the shape
-                        // of the day are all still legible, just not live.
-                        ZoomableStaticMap(places)
-                    }
                     AndroidView(
                         modifier = Modifier
                             .fillMaxSize()
@@ -193,14 +199,14 @@ fun InteractiveMapDialog(
                                         // request is not a failed map.
                                         if (request?.isForMainFrame == true) {
                                             loading = false
-                                            failure = "The map page failed to load"
+                                            embeddedWorks = false
                                             Log.w(TAG, "main frame failed: ${error?.description}")
                                         }
                                     }
                                 }
 
-                                // The whole point of the spike: on an old WebView the
-                                // Maps API fails in the console, not in the HTTP layer.
+                                // On an old WebView the Maps API fails in the console,
+                                // not in the HTTP layer.
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onConsoleMessage(
                                         message: ConsoleMessage,
@@ -215,8 +221,23 @@ fun InteractiveMapDialog(
                                 }
                             }
                         },
-                        update = { it.loadUrl(url) },
+                        // State changes recompose this view; they must not restart the page.
+                        update = {
+                            if (it.tag != url) {
+                                it.tag = url
+                                it.loadUrl(url)
+                            }
+                        },
+                        onRelease = {
+                            it.stopLoading()
+                            it.destroy()
+                        },
                     )
+
+                    // Above the hidden WebView so it receives gestures instead of the browser.
+                    if (embeddedWorks == false) {
+                        ZoomableStaticMap(places, loadStillMap)
+                    }
 
                     if (loading && embeddedWorks == null) {
                         CircularProgressIndicator(
@@ -230,7 +251,7 @@ fun InteractiveMapDialog(
                             modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
                         ) {
                             Text(
-                                "This device has an old browser engine, so the map is a still image. Pinch to zoom, or tap Directions for the live map.",
+                                "Showing a still map. Pinch or use the zoom buttons, or tap Directions for the live map.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -265,30 +286,46 @@ fun InteractiveMapDialog(
 /**
  * The day's static map, but pinchable.
  *
- * The image is requested square and large (the backend renders at scale 2, so 640
- * becomes 1280 real pixels) precisely so there is detail to zoom into -- the card's
- * 640x360 would turn to mush at 3x. Zoom is capped where the source runs out of pixels
- * rather than where the gesture runs out of fingers.
- *
- * Not a substitute for a live map: it cannot re-tile, so street names do not appear as
- * you go in. It is the most a device can show without a working Maps JavaScript API.
+ * Requested square and large (the backend renders at scale 2, so 640 becomes 1280 real
+ * pixels) precisely so there is detail to zoom into; [MAX_ZOOM] is where the source runs
+ * out of pixels. It cannot re-tile, so street names never appear -- this is the most a
+ * device can show without a working Maps JavaScript API.
  */
 @Composable
-private fun ZoomableStaticMap(places: List<String>) {
+internal fun ZoomableStaticMap(
+    places: List<String>,
+    load: suspend (List<String>) -> Bitmap? = { DayMapClient.load(it, widthPx = 640, heightPx = 640) },
+) {
     var bitmap by remember(places) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(places) {
-        bitmap = DayMapClient.load(places, widthPx = 640, heightPx = 640)
+    var loading by remember(places) { mutableStateOf(true) }
+    var attempt by remember(places) { mutableStateOf(0) }
+    LaunchedEffect(places, attempt) {
+        loading = true
+        bitmap = load(places)
+        loading = false
     }
 
     val image = bitmap
     if (image == null) {
         Box(Modifier.fillMaxSize()) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center).size(32.dp))
+            if (loading) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center).size(32.dp))
+            } else {
+                Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Could not load this map.")
+                    TextButton(onClick = { attempt++ }) { Text("Retry map") }
+                }
+            }
         }
         return
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    ZoomableMapImage(image)
+}
+
+@Composable
+internal fun ZoomableMapImage(image: Bitmap) {
+    BoxWithConstraints(Modifier.fillMaxSize().clipToBounds()) {
         var scale by remember { mutableStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
         val width = constraints.maxWidth.toFloat()
@@ -297,28 +334,23 @@ private fun ZoomableStaticMap(places: List<String>) {
         // Pan has to be clamped to what the zoom actually exposes, or the map can be
         // flung off screen and the only way back is to close the dialog.
         fun clamp(candidate: Offset, atScale: Float): Offset {
-            val maxX = (width * (atScale - 1f)) / 2f
-            val maxY = (height * (atScale - 1f)) / 2f
+            val fit = minOf(width / image.width, height / image.height)
+            val maxX = ((image.width * fit * atScale - width) / 2f).coerceAtLeast(0f)
+            val maxY = ((image.height * fit * atScale - height) / 2f).coerceAtLeast(0f)
             return Offset(candidate.x.coerceIn(-maxX, maxX), candidate.y.coerceIn(-maxY, maxY))
         }
 
-        val transform = rememberTransformableState { zoomChange, panChange, _ ->
+        val transform = rememberTransformableState { _, zoomChange, panChange, _ ->
             val next = (scale * zoomChange).coerceIn(1f, MAX_ZOOM)
             offset = clamp(offset + panChange, next)
             scale = next
         }
 
-        Image(
-            bitmap = image.asImageBitmap(),
-            contentDescription = "Trip map, pinch to zoom",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
+        Box(
+            Modifier.fillMaxSize()
+                .semantics {
+                    contentDescription = "Trip map"
+                    stateDescription = "${(scale * 100).toInt()}% zoom"
                 }
                 .transformable(transform)
                 .pointerInput(Unit) {
@@ -335,6 +367,37 @@ private fun ZoomableStaticMap(places: List<String>) {
                         },
                     )
                 },
-        )
+        ) {
+            Image(
+                bitmap = image.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                },
+            )
+        }
+        Surface(Modifier.align(Alignment.TopEnd).padding(8.dp), shape = RoundedCornerShape(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = {
+                        scale = (scale / 1.5f).coerceAtLeast(1f)
+                        offset = clamp(offset, scale)
+                    },
+                    enabled = scale > 1f,
+                ) { Text("Zoom out") }
+                TextButton(
+                    onClick = { scale = (scale * 1.5f).coerceAtMost(MAX_ZOOM) },
+                    enabled = scale < MAX_ZOOM,
+                ) { Text("Zoom in") }
+                TextButton(onClick = {
+                    scale = 1f
+                    offset = Offset.Zero
+                }) { Text("Reset map") }
+            }
+        }
     }
 }

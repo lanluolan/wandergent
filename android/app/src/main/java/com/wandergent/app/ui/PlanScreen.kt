@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -46,13 +47,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wandergent.app.data.local.SavedPlanEntity
-import com.wandergent.app.data.violationLabel
-import com.wandergent.app.data.toolFailureText
 
 /** How wide a message bubble may get, as a share of the row. */
 private const val BUBBLE_MAX_WIDTH = 0.86f
@@ -60,16 +60,12 @@ private const val BUBBLE_MAX_WIDTH = 0.86f
 /**
  * The planner, as a conversation.
  *
- * Laid out as a chat because that is what the product is -- you describe a trip in your
- * own words and the agent works in the open. The transcript keeps every attempt on
- * screen, so a request and the plan it produced stay next to each other and an earlier
- * plan is a scroll away rather than gone.
+ * A chat, because that is what the product is: you describe a trip in your own words and
+ * the agent works in the open, with every attempt still a scroll away.
  *
- * **A follow-up edits the plan above it.** The newest itinerary rides along with the
- * next message, and the revision is validated and repaired by the same code that
- * checked the first draft -- so "swap day 2's lunch" cannot quietly put the trip over
- * budget or leave ten minutes to cross the city. That re-check is the thing a chat
- * window cannot do for you.
+ * **A follow-up edits the plan above it.** The newest itinerary rides along with the next
+ * message, and the revision is validated and repaired by the same code that checked the
+ * first draft -- so "swap day 2's lunch" cannot quietly put the trip over budget.
  */
 @Composable
 fun PlanScreen(
@@ -97,9 +93,9 @@ fun PlanScreen(
     val busy = transcript.any { it.state is TurnState.Running }
     val listState = rememberLazyListState()
 
-    // Follow the conversation down as it grows, including while a reply streams in --
-    // the progress lines are the point, and they are useless off-screen. Keyed on the
-    // whole transcript so every progress update re-runs it.
+    // Follow the conversation down as it grows, including while a reply streams in: the
+    // progress lines are useless off-screen. Keyed on the whole transcript, so every
+    // progress update re-runs it.
     LaunchedEffect(transcript) {
         if (transcript.isEmpty()) return@LaunchedEffect
         withFrameNanos { }  // let the new items lay out before asking how many there are
@@ -157,8 +153,8 @@ private fun LazyListScope.exchangeItems(
         is TurnState.Running -> item(key = "run-${exchange.id}") { ProgressBubble(state.progress) }
         is TurnState.Error -> item(key = "err-${exchange.id}") { ErrorBubble(state, onRetry) }
         is TurnState.Loaded -> {
-            // A revised plan is a full itinerary again, so without a label the reader
-            // cannot tell "I edited your trip" from "here is a different trip".
+            // A revision is a full itinerary again, so without a label an edit reads as
+            // a different trip.
             if (exchange.revision) {
                 item(key = "rev-${exchange.id}") { RevisionLabel() }
             }
@@ -201,9 +197,8 @@ private fun UserBubble(text: String) {
         Surface(
             // `fill = false` caps the bubble without stretching a short message to it.
             modifier = Modifier.weight(BUBBLE_MAX_WIDTH, fill = false),
-            // Solid brand teal, not `primaryContainer`: that role is a near-neon cyan in
-            // this palette and a bubble of it on every message shouts over the plan,
-            // which is the part worth looking at. Matches the send button.
+            // Solid brand teal, not `primaryContainer`: that role is a near-neon cyan
+            // here and would shout over the plan. Matches the send button.
             color = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
             shape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp),
@@ -238,12 +233,8 @@ private fun AgentBubble(
 }
 
 /**
- * Live progress, driven entirely by events from the server.
- *
- * This replaced a timer that cycled through plausible-sounding stages. Every line here
- * corresponds to something that actually happened: a stage the agent entered, a tool it
- * called and how that came back, and the names of places as they are written into the
- * itinerary.
+ * Live progress, driven entirely by events from the server: every line corresponds to
+ * something that actually happened, not to a timer cycling through plausible stages.
  */
 @Composable
 private fun ProgressBubble(progress: LiveProgress) {
@@ -262,81 +253,19 @@ private fun ProgressBubble(progress: LiveProgress) {
 
             LinearProgressIndicator(Modifier.fillMaxWidth())
 
-            progress.tools.forEach { ToolProgressRow(it) }
-
-            progress.violations?.let { violations ->
-                HorizontalDivider()
-                if (violations.isEmpty()) {
-                    Text(
-                        "Budget, timing and routing all check out",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                } else {
-                    Text(
-                        "Found ${violations.size} problem(s), fixing",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    violations.take(3).forEach {
-                        Text(
-                            "· ${violationLabel(it.code)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            if (progress.writing.isNotEmpty()) {
-                HorizontalDivider()
-                Text(
-                    "Scheduling",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                progress.writing.forEach {
-                    Text("· $it", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ToolProgressRow(tool: ToolProgress) {
-    val label = when (tool.name) {
-        "get_weather_forecast" -> tool.subject?.let { "Checking the forecast for $it" } ?: "Checking the forecast"
-        "remember_preference" -> "Remembering your preference"
-        "search_places" -> "Finding places to go"
-        "get_travel_time" -> "Checking travel times"
-        else -> tool.name
-    }
-    val (status, color) = when (tool.ok) {
-        null -> "running" to MaterialTheme.colorScheme.onSurfaceVariant
-        true -> "done" to MaterialTheme.colorScheme.primary
-        false -> "failed" to MaterialTheme.colorScheme.error
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            // `weight` so the label yields rather than pushing the status out of the row.
-            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            Text(status, style = MaterialTheme.typography.bodySmall, color = color)
-        }
-        if (tool.ok == false) {
-            // The reason gets its own full-width line rather than sharing the status
-            // slot. A sentence there had no room to lay out and wrapped one character
-            // per line, down the right edge -- seen on a live run when the weather
-            // lookup failed.
+            // `heightIn` reserves the space before the first event, so the bubble does
+            // not jump the moment it fills.
             Text(
-                toolFailureText(tool.code),
-                style = MaterialTheme.typography.bodySmall,
-                color = color,
-                modifier = Modifier.fillMaxWidth(),
+                progress.detail.orEmpty(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (progress.detailIsProblem) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 20.dp),
             )
         }
     }
@@ -358,7 +287,7 @@ private fun ErrorBubble(state: TurnState.Error, onRetry: () -> Unit) {
             }
             Text(state.message, style = MaterialTheme.typography.bodyMedium)
             // Only retryable failures get a button: a misconfigured server (HTTP 500)
-            // will fail identically no matter how many times it is tapped.
+            // fails identically however many times it is tapped.
             if (state.retryable) {
                 TextButton(onClick = onRetry, contentPadding = PaddingValues(0.dp)) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
@@ -370,12 +299,7 @@ private fun ErrorBubble(state: TurnState.Error, onRetry: () -> Unit) {
     }
 }
 
-/**
- * The landing screen.
- *
- * The copy carries the shape a good request has -- city, days, budget, preference --
- * because that is the only guidance left now that the example chips are gone.
- */
+/** The landing screen. The copy carries the shape a good request has. */
 @Composable
 private fun EmptyState(modifier: Modifier = Modifier) {
     Column(
@@ -408,20 +332,15 @@ private fun Composer(
     onSend: () -> Unit,
     onNewConversation: () -> Unit,
 ) {
-    // The page colour, not a tinted slab. `tonalElevation` shaded this block towards the
-    // brand teal and the navigation bar shaded itself differently again, which put three
-    // competing bands across the bottom of the screen. Painting composer and tabs in the
-    // page colour collapses all of it: one continuous surface, one hairline where the
-    // content stops, and the input pill as the only tinted thing -- so the eye goes to
-    // the one element that is actually interactive.
+    // Page colour, not a tinted slab: `tonalElevation` here and on the navigation bar put
+    // three competing bands across the bottom. One continuous surface, one hairline, and
+    // the input pill as the only tinted thing -- the one element that is interactive.
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             if (showRevisionHint) {
-                // The hint and its escape hatch belong together: the moment someone
-                // reads "this will edit the plan above", the next thing they need is
-                // the way to not do that.
+                // The hint and its escape hatch belong together.
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -446,11 +365,9 @@ private fun Composer(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // A hand-rolled pill rather than `TextField`, for height. The Material
+                // A hand-rolled pill rather than `TextField`, for height: the Material
                 // field reserves room for a label it will never have, so an empty
-                // composer showed as a 56dp blank slab -- the largest, emptiest thing on
-                // the screen. `BasicTextField` in a Surface is the same behaviour at the
-                // size the content actually needs.
+                // composer was a 56dp blank slab.
                 Surface(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(22.dp),

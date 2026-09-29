@@ -349,15 +349,11 @@ private fun ErrorText(error: String?) {
 }
 
 /**
- * Password reset, both halves on one screen.
+ * Password reset, both halves on one screen: the code arrives in a *different app*, so
+ * splitting it would mean navigating back to a form the person has already left.
  *
- * One screen rather than two, because the code arrives in a *different app*. Splitting it
- * would mean navigating back to a form the person has already left, and every step between
- * asking and typing is a step where the code gets lost.
- *
- * The confirmation never says whether the address had an account. The server answers
- * identically either way on purpose, and a client that helpfully reported "no such
- * address" would hand back exactly what the server withheld.
+ * The confirmation never says whether the address had an account -- the server answers
+ * identically on purpose.
  */
 @Composable
 fun ResetPasswordScreen(viewModel: AuthViewModel, onBackToLogin: () -> Unit) {
@@ -407,9 +403,7 @@ fun ResetPasswordScreen(viewModel: AuthViewModel, onBackToLogin: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(
-                    // Upper case and no ambiguous characters, matching how the server
-                    // generates it, so this field cannot produce a code the server could
-                    // not have issued.
+                    // Upper case, matching how the server generates the code.
                     capitalization = KeyboardCapitalization.Characters,
                     imeAction = ImeAction.Next,
                 ),

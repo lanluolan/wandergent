@@ -1,9 +1,12 @@
 package com.wandergent.app.ui
 
+import android.graphics.Rect
+import android.view.ViewTreeObserver
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,12 +16,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,27 +38,55 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wandergent.app.data.SharedPlanCard
+import com.wandergent.app.data.SharedPlanDetail
 import com.wandergent.app.data.formatMoney
+
+/**
+ * Whether the soft keyboard is up, measured from the window rather than from insets.
+ *
+ * `WindowInsets.isImeVisible` never flips below API 30 unless the activity has gone
+ * edge-to-edge with `setDecorFitsSystemWindows(false)`, which this app deliberately has
+ * not. `adjustResize` (see the manifest) shrinks the visible frame instead, so the missing
+ * height is the keyboard -- the threshold only has to clear the navigation bar.
+ */
+@Composable
+private fun keyboardVisible(): State<Boolean> {
+    val view = LocalView.current
+    return produceState(false, view) {
+        val onLayout = ViewTreeObserver.OnGlobalLayoutListener {
+            val visible = Rect()
+            view.getWindowVisibleDisplayFrame(visible)
+            val hidden = view.rootView.height - visible.height()
+            value = hidden > view.rootView.height * 0.15
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(onLayout)
+        awaitDispose { view.viewTreeObserver.removeOnGlobalLayoutListener(onLayout) }
+    }
+}
 
 /**
  * Trips other people shared, and the ones you shared back.
  *
- * Sharing happens from the library rather than here -- you share a trip you have, and
- * that is where your trips live. This tab is for reading.
+ * Sharing happens from the library rather than here -- you share a trip you have, and that
+ * is where your trips live. This tab is for reading.
  *
- * **Nothing on this feed is authenticated or moderated**; see `app/community/store.py`.
- * The banner says so rather than leaving it to be discovered.
+ * **Nothing on this feed is moderated**; see `app/community/store.py`.
  */
 @Composable
 fun CommunityScreen(
@@ -67,6 +99,15 @@ fun CommunityScreen(
     val message by viewModel.message.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    val focus = LocalFocusManager.current
+
+    // A text field keeps focus after the keyboard closes, leaving a blinking caret in a
+    // field nothing can type into. Watching the keyboard covers every way it can be
+    // dismissed -- back, the Search key, the IME's own hide button.
+    val keyboardOpen by keyboardVisible()
+    LaunchedEffect(keyboardOpen) {
+        if (!keyboardOpen) focus.clearFocus()
+    }
 
     // Reload every time the tab is entered, not only when the reader changes. The
     // destination leaves composition on a tab switch, so this fires again on return.
@@ -83,29 +124,15 @@ fun CommunityScreen(
 
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, end = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Community", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        "Trips other travellers shared. Posting needs an account; nothing here is moderated.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = viewModel::refresh) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                }
-            }
-
             OutlinedTextField(
                 value = query,
                 onValueChange = viewModel::search,
                 label = { Text("Search by destination") },
                 singleLine = true,
+                // The list filters as you type, so the Search key has nothing left to
+                // submit -- it only has to put the keyboard away.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
@@ -116,7 +143,7 @@ fun CommunityScreen(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 8.dp),
             )
 
             state.error?.let {
@@ -145,8 +172,7 @@ fun CommunityScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         // "Nothing shared yet" under an active search would be a lie, and
-                        // the fix for the two cases is different: post something, or
-                        // search for something else.
+                        // the fix differs: post something, or search for something else.
                         val searching = query.isNotBlank()
                         Text(
                             if (searching) "No trips to “$query”" else "Nothing shared yet",
@@ -165,7 +191,7 @@ fun CommunityScreen(
 
                 else -> LazyColumn(
                     Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(state.cards, key = { it.id }) { card ->
@@ -181,10 +207,9 @@ fun CommunityScreen(
 
                     if (state.hasMore) {
                         item(key = "load-more") {
-                            // Composing this row *is* the trigger: it only enters
-                            // composition when the reader has scrolled to the end, which
-                            // is exactly when the next page is wanted. The view model
-                            // guards against the repeat calls that scrolling produces.
+                            // Composing this row *is* the trigger -- it only enters
+                            // composition once the reader reaches the end. The view model
+                            // guards the repeat calls scrolling produces.
                             LaunchedEffect(state.nextCursor) { viewModel.loadMore() }
                             Row(
                                 Modifier.fillMaxWidth().padding(16.dp),
@@ -203,7 +228,7 @@ fun CommunityScreen(
 @Composable
 private fun SharedPlanRow(
     card: SharedPlanCard,
-    detail: com.wandergent.app.data.SharedPlanDetail?,
+    detail: SharedPlanDetail?,
     mine: Boolean,
     onOpen: () -> Unit,
     onToggleSave: () -> Unit,
@@ -235,8 +260,8 @@ private fun SharedPlanRow(
                         color = MaterialTheme.colorScheme.outline,
                     )
                 }
-                // Your own post gets a way down, not a way to save it to the library it
-                // is already in.
+                // Your own post gets a way down, not a way to save it to the library
+                // it is already in.
                 if (mine) {
                     IconButton(onClick = onWithdraw) {
                         Icon(Icons.Default.Delete, contentDescription = "Take down")
@@ -276,7 +301,7 @@ private fun SharedPlanRow(
                     HorizontalDivider()
                     if (card.request.isNotBlank()) {
                         Text(
-                            "Original request: ${card.request}",
+                            "Shared request: ${card.request}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 3,

@@ -3,9 +3,8 @@ package com.wandergent.app.data
 /**
  * Light, dark, or whatever the phone is set to.
  *
- * Stored per device rather than per account, unlike [Currency]: it is a property of the
- * screen you are looking at, not of the traveller. It also has to apply on the login
- * screen, where there is no account yet.
+ * Per device rather than per account, unlike [Currency]: it also has to apply on the
+ * login screen, where there is no account yet.
  */
 enum class ThemeMode(val label: String) {
     SYSTEM("System"),

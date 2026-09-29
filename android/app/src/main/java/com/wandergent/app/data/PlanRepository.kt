@@ -54,9 +54,8 @@ class PlanRepository(
 /**
  * "Too many requests", with the wait in it.
  *
- * The server sends `Retry-After` precisely so a client does not have to guess or poll.
- * A message without a number in it produces a person tapping the button every two
- * seconds, which is the behaviour the limit exists to stop.
+ * `Retry-After` exists so the client does not have to guess. Without the number in the
+ * message, people tap the button every two seconds -- what the limit exists to stop.
  */
 internal fun tooManyRequests(detail: String?, retryAfterSeconds: Int?): String {
     val wait = when {

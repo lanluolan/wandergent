@@ -61,4 +61,75 @@ class DayMapUrlTest {
         // The Maps key lives on the server; nothing key-shaped is assembled here.
         assertTrue(!url.contains("key="), url)
     }
+
+    // --- which activities become stops ------------------------------------------------
+
+    private fun activity(title: String, category: String, location: String?) = Activity(
+        startTime = "09:00",
+        endTime = "10:00",
+        title = title,
+        category = category,
+        location = location,
+    )
+
+    @Test
+    fun `a walk between two places is not a stop`() {
+        // A transport activity's location is the leg, not a place. Google cannot resolve
+        // "W 30th St to W 53rd St", draws the day and stamps a Map error over it.
+        val stops = DayMapClient.stops(
+            listOf(
+                activity("Coffee", "food", "251 W 30th St, New York, NY 10001"),
+                activity("Walk to MoMA", "transport", "W 30th St to W 53rd St"),
+                activity("MoMA", "sightseeing", "11 W 53rd St, New York, NY 10019"),
+            )
+        )
+
+        assertEquals(
+            listOf("251 W 30th St, New York, NY 10001", "11 W 53rd St, New York, NY 10019"),
+            stops,
+        )
+    }
+
+    @Test
+    fun `the same place twice in a row is one stop`() {
+        val stops = DayMapClient.stops(
+            listOf(
+                activity("Lunch", "food", "Grand Central Market, Los Angeles"),
+                activity("Coffee after", "food", " grand central market, los angeles "),
+                activity("Sleep", "accommodation", "Hotel Figueroa, Los Angeles"),
+            )
+        )
+
+        assertEquals(
+            listOf("Grand Central Market, Los Angeles", "Hotel Figueroa, Los Angeles"),
+            stops,
+        )
+    }
+
+    @Test
+    fun `a place you come back to later keeps both visits`() {
+        // Two visits are two points on the line; the server draws one pin for them.
+        val stops = DayMapClient.stops(
+            listOf(
+                activity("Check in", "accommodation", "Hotel Figueroa, Los Angeles"),
+                activity("Museum", "sightseeing", "The Broad, Los Angeles"),
+                activity("Sleep", "accommodation", "Hotel Figueroa, Los Angeles"),
+            )
+        )
+
+        assertEquals(3, stops.size)
+    }
+
+    @Test
+    fun `activities with no location are skipped`() {
+        val stops = DayMapClient.stops(
+            listOf(
+                activity("Rest", "rest", null),
+                activity("Blank", "food", "   "),
+                activity("Museum", "sightseeing", "The Broad, Los Angeles"),
+            )
+        )
+
+        assertEquals(listOf("The Broad, Los Angeles"), stops)
+    }
 }

@@ -8,19 +8,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Brand palette: a deep teal that reads as "travel" without the airline-blue cliche,
- * with a warm amber accent used only for costs and highlights so money always looks
- * the same wherever it appears.
- *
- * Dynamic colour is deliberately not used -- the app should look the same on every
- * device when it goes into a portfolio screenshot.
+ * Brand palette: a deep teal, with a warm amber accent used only for costs and highlights
+ * so money looks the same wherever it appears. No dynamic colour -- the app should look
+ * the same on every device.
  *
  * **Every neutral role is set explicitly, and that is not optional.** `lightColorScheme`
- * keeps Material's baseline (purple) values for whatever you leave out, and the roles
- * left out are the ones that paint the largest areas: `Card` draws on
- * `surfaceContainerLow`, `NavigationBar` on `surfaceContainer`. Setting only `surface`
- * and `primary` shipped a teal app with lavender cards and a pink-grey nav bar --
- * visible on device long before anyone thought to check the palette.
+ * keeps Material's purple baseline for anything left out, and those roles paint the
+ * largest areas: `Card` draws on `surfaceContainerLow`, `NavigationBar` on
+ * `surfaceContainer`.
  */
 private val Teal = Color(0xFF00696E)
 private val TealLight = Color(0xFF6FF6FF)

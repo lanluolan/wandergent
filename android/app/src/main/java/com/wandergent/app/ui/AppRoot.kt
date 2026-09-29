@@ -28,24 +28,18 @@ private const val ROUTE_MAIN = "main"
 /**
  * Top-level routing between the auth flow and the app.
  *
- * The session is the single source of truth: screens only ask the view model to sign in
- * or out, and navigation follows the resulting state. That keeps sign-in, sign-out and
- * "already signed in on launch" as one code path instead of three, and means the back
- * stack cannot leak a signed-in screen behind the login form.
- *
- * Routing waits for [SessionState.Loading] to resolve, otherwise every cold start would
- * flash the login screen before the persisted session finishes loading.
+ * The session is the single source of truth: screens only ask the view model to sign in or
+ * out and navigation follows, so sign-in, sign-out and "already signed in on launch" are
+ * one code path. Waits for [SessionState.Loading] so a cold start does not flash the login
+ * screen before the persisted session has loaded.
  */
 @Composable
 fun AppRoot(authViewModel: AuthViewModel = viewModel()) {
     val session by authViewModel.session.collectAsStateWithLifecycle()
     val navController = rememberNavController()
 
-    // Keyed on *which* state, not on the state object. `SessionState.SignedIn` carries the
-    // user row, so anything that edits it -- confirming an email, changing an address --
-    // produced a new instance and re-ran this, navigating to `main` and resetting the tab
-    // to Plan. Someone confirming their email from the profile was thrown out of the
-    // profile, which reads as the app losing its place.
+    // Keyed on *which* state, not on the state object: `SignedIn` carries the user row, so
+    // any edit to that row would re-run this and throw the reader back to the Plan tab.
     val phase = when (session) {
         is SessionState.Loading -> "loading"
         is SessionState.SignedIn -> "in"

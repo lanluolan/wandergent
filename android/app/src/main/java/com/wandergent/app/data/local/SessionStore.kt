@@ -12,17 +12,14 @@ import kotlinx.coroutines.flow.map
 private val Context.sessionDataStore by preferencesDataStore(name = "session")
 
 /**
- * The live session: which local row owns this device's data, and the token that proves
- * who that is to the server.
+ * The live session: which local row owns this device's data, and the token that proves who
+ * that is to the server. The `Long` is a storage key -- the library and the transcript are
+ * partitioned on it -- and only the token is identity.
  *
- * Two values rather than one because they answer different questions. The `Long` is a
- * local storage key -- the library and the transcript are partitioned on it. The token is
- * identity, and only the server can judge it.
- *
- * **Known gap: the token is stored in plain DataStore.** Readable with root, and it lands
- * in a device backup. `EncryptedSharedPreferences` would fix that at the cost of another
- * dependency; the honest mitigation today is that the token expires in 30 days and
- * signing out revokes it server-side.
+ * **Known gap: the token is stored in plain DataStore**, readable with root.
+ * `EncryptedSharedPreferences` would cost another dependency; today's mitigation is a
+ * 30-day expiry, server-side revocation on sign-out, and the backup exclusion in
+ * `res/xml/data_extraction_rules.xml`.
  */
 class SessionStore(private val context: Context) {
 

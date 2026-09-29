@@ -25,10 +25,8 @@ data class PublishRequest(
 /**
  * One page of the feed.
  *
- * An envelope rather than a bare list because a page has to say where it *ends*. Without
- * that the client only knows how many it skipped, which is offset paging -- and the feed
- * grows at the top, so one post published while somebody reads shifts every later page by
- * one and shows them a duplicate.
+ * An envelope rather than a bare list, so the page can say where it *ends*. Offset paging
+ * would duplicate rows: the feed grows at the top while somebody is reading it.
  */
 @Serializable
 data class FeedPage(
@@ -53,11 +51,8 @@ data class SharedPlanCard(
     @SerialName("created_at") val createdAt: String,
     @SerialName("save_count") val saveCount: Int = 0,
     /**
-     * Whether *this* reader already saved it.
-     *
-     * Genuinely tri-state, so it must stay nullable: null means the request carried no
-     * viewer, which is not the same claim as "you have not saved this" and must not
-     * draw an empty heart.
+     * Whether *this* reader already saved it. Tri-state, so it stays nullable: null means
+     * the request carried no viewer, which is not the same claim as "not saved".
      */
     @SerialName("saved_by_viewer") val savedByViewer: Boolean? = null,
 )

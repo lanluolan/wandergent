@@ -9,24 +9,18 @@ import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
 /**
- * A saved itinerary.
- *
- * The plan itself is stored as the raw response JSON in one column rather than being
- * shredded into activity/day tables. An itinerary is a document that is always read
- * whole and never queried by its parts, so normalising it would buy nothing and would
- * couple the local schema to every backend model change. The few fields that the list
- * screen sorts and displays are denormalised out alongside it.
+ * A saved itinerary, stored as the raw response JSON in one column rather than shredded
+ * into day and activity tables. It is always read whole and never queried by its parts, so
+ * normalising would only couple the local schema to every backend model change. The fields
+ * the list screen sorts and displays are denormalised out alongside it.
  */
 @Entity(tableName = "saved_plans")
 data class SavedPlanEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     /**
-     * Which local account saved this.
-     *
-     * [LEGACY_USER] marks rows written before the library was per-account. They are
-     * adopted by the first account that opens the library rather than hidden, because
-     * making a user's saved trips silently vanish is a worse outcome than one device
-     * owner inheriting their own old plans.
+     * Which local account saved this. [LEGACY_USER] marks rows from before the library was
+     * per-account: the first account to open it adopts them rather than hiding them, since
+     * saved trips silently vanishing is the worse outcome.
      */
     val userId: Long = LEGACY_USER,
     val destination: String,
@@ -41,11 +35,9 @@ data class SavedPlanEntity(
     /**
      * The community post this row was copied from, or null for a trip planned here.
      *
-     * Exists so saving is idempotent by *identity* rather than by timing. Without it,
-     * save -> unsave -> save left two identical trips in the library: the server's save
-     * is keyed on (plan, user) and so is a no-op the second time, but the copy is not.
-     * Deduping on contents instead would break the legitimate case where someone deleted
-     * their copy and wants it back.
+     * Makes saving idempotent by *identity*: without it, save -> unsave -> save left two
+     * identical trips, because the server's save is keyed on (plan, user) but the copy was
+     * not. Deduping on contents would break "delete my copy, then save it again".
      */
     val sharedPlanId: String? = null,
 ) {

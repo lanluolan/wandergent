@@ -2,12 +2,15 @@
 
 A travel-planning agent that turns a sentence into a feasible itinerary — and checks its own work.
 
-> *"3 days in Los Angeles next month, budget $900, I like food and museums, no hiking"*
+> *"3 days in Los Angeles next week, budget $900, I like food and museums, no hiking"*
 > → resolves the dates → checks the forecast → puts the Getty on the day it rains and the pier on
 > the day it does not → validates budget, time conflicts and travel time between places →
 > streams the whole process to an Android app.
 
 Python + FastAPI + LangGraph backend, Kotlin + Jetpack Compose client, tools published over MCP.
+
+In the Android app, **You → Saved preferences** lists what the planner remembers and lets
+you delete individual preferences. Changes apply to future planning runs.
 
 <!-- TODO: add a demo GIF of the streaming UI here -- it is the single most persuasive thing on this page. -->
 
@@ -76,25 +79,19 @@ cp .env.example .env        # then put your key in OPENAI_API_KEY
 uv run uvicorn app.main:app --reload
 ```
 
-`GET /health` answers without a key. Planning needs one — either the server's, or the
-traveller's own: the app's **You -> AI model** row takes an API key, and optionally a model
-name and endpoint, and sends them per request.
+`GET /health` answers without a key. Planning needs the server's: `OPENAI_API_KEY`,
+`OPENAI_BASE_URL` and `OPENAI_MODEL` in `backend/.env`. The endpoint is any
+OpenAI-compatible one -- switching providers is those three lines and no code -- and the
+account is the operator's alone: the app has no field for a key and the server accepts
+none per request. See `docs/decisions.md` for why the bring-your-own-key version was
+removed.
 
-**A deployment sets none of the three.** Key, endpoint and model all default to empty, so
-every caller brings their own account and the operator pays for no tokens at all; a request
-missing a piece is a 400 naming it and pointing at that screen. Set them in `.env` on a
-developer box — evals and the smoke scripts call the orchestrator directly and have no
-headers to borrow. Note that the model bill is not the whole bill —
-a plan also spends this server's Google Places and Routes quota (~9 + 7 calls of expensive
-SKU), which stays yours, so `MAX_PLANS_PER_DAY` is the ceiling that matters.
-
-The endpoint field accepts the well-known OpenAI-compatible providers out of the box —
-OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, Together, OpenRouter — plus whatever the
-server itself uses. It is a closed allowlist on purpose; `LLM_BYOK_BASE_URLS` replaces it.
-See `docs/api.md`.
+The model bill is not the whole bill: a plan also spends Google Places and Routes quota
+(~9 + 7 calls of expensive SKU), so `MAX_PLANS_PER_DAY` is the ceiling that matters
+before any public deploy.
 
 ```bash
-uv run pytest -q                        # 455 offline tests, no key needed
+uv run pytest -q                        # offline tests, no key needed
 uv run python -m scripts.smoke_plan     # live end-to-end run (costs tokens)
 uv run python -m evals.run              # LLM regression eval (costs tokens)
 ```
@@ -111,6 +108,18 @@ adb reverse tcp:8000 tcp:8000           # re-run after every unplug
 
 Put your SDK path in `android/local.properties` (gitignored) as `sdk.dir=...`. The USB
 tunnel is why the app targets `127.0.0.1` — no shared Wi-Fi and no inbound firewall rule.
+
+Client checks (inside `android/`):
+
+```powershell
+.\gradlew.bat testDebugUnitTest assembleDebug assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -r -e class com.wandergent.app.ui.ExperienceTest com.wandergent.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The Compose tests use isolated content and fake map images, without opening account or
+Room stores or calling external APIs. In-place installation preserves existing app data.
 
 ## API
 

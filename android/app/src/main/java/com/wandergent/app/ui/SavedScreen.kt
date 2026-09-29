@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wandergent.app.data.PlanResponse
 import com.wandergent.app.data.formatMoney
 import com.wandergent.app.data.local.SavedPlanEntity
 import java.text.SimpleDateFormat
@@ -58,20 +59,13 @@ fun SavedScreen(
     userId: Long? = null,
     onRevise: (SavedPlanEntity) -> Unit = {},
     /**
-     * Publish a trip to the community feed, with whatever the traveller wrote about it.
-     *
-     * Hoisted rather than handled here so the tab that *shows* the feed and the tab that
-     * *adds* to it work through one view model. Two instances would leave a trip shared
-     * from here missing from the feed until it happened to reload.
+     * Publish a trip to the community feed. Hoisted rather than handled here so this tab
+     * and the Community tab share one view model, and a publish shows up immediately.
      */
     onShare: (SavedPlanEntity, String, Boolean) -> Unit = { _, _, _ -> },
     /**
-     * How the share went, to be shown here.
-     *
-     * Sharing starts on this screen but is carried out by the community view model, whose
-     * own snackbar lives on the Community tab -- so a refused publish said nothing at all
-     * here and then appeared, out of context, the next time that tab was opened. The
-     * result has to surface where the tap happened.
+     * How the share went. The community view model does the work, so without this a refused
+     * publish would surface on the Community tab instead of where the tap happened.
      */
     shareMessage: String? = null,
     onShareMessageShown: () -> Unit = {},
@@ -153,8 +147,7 @@ fun SavedScreen(
     // from here, only from the feed -- so it asks first rather than firing on the tap.
     sharing?.let { plan ->
         var note by remember(plan.id) { mutableStateOf("") }
-        // Off by default. The original request is where private context ends up, and it
-        // was previously published with no mention of it anywhere.
+        // Off by default: the original request is where private context ends up.
         var includeRequest by remember(plan.id) { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { sharing = null },
@@ -184,13 +177,16 @@ fun SavedScreen(
                         ) {
                             Checkbox(checked = includeRequest, onCheckedChange = { includeRequest = it })
                             Text(
-                                "Also share what I asked for",
+                                "Also share the saved request below",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
-                        // Shown, not summarised: the traveller has to be able to see the
-                        // exact words before deciding, because only they know what is in
-                        // them. A description of the field is not consent.
+                        Text(
+                            "For an edited trip, this may be your latest edit request.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        // Shown, not summarised: only the author knows what is in it, and
+                        // a description of the field is not consent.
                         Text(
                             "“${plan.request}”",
                             style = MaterialTheme.typography.bodySmall,
@@ -252,7 +248,7 @@ private fun SavedPlanCard(
     onDelete: () -> Unit,
     onRevise: () -> Unit,
     onShare: () -> Unit,
-    decode: () -> com.wandergent.app.data.PlanResponse?,
+    decode: () -> PlanResponse?,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -291,17 +287,14 @@ private fun SavedPlanCard(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     HorizontalDivider()
                     Text(
-                        "Original request: ${plan.request}",
+                        "Saved request: ${plan.request}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (itinerary == null) {
                         Text("This entry could not be read. It may have been saved by an older version.")
                     } else {
-                        // Editing a saved trip is the point of saving one. Without this
-                        // a plan could only be changed while it happened to still be in
-                        // the planning tab's transcript -- that is, until the next
-                        // restart.
+                        // Editing a saved trip is the point of saving one.
                         FilledTonalButton(
                             onClick = onRevise,
                             modifier = Modifier.fillMaxWidth(),

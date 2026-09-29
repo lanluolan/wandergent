@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The dark counterpart. Only reached when the *system* is in dark mode, which is a real
-  limitation: the in-app Light/Dark/System setting lives in DataStore and cannot be read
-  before the window exists, so someone who forces dark on a light phone still gets one light
-  frame. Fixing that properly would mean persisting the choice somewhere the framework can
-  read synchronously; it is not worth a second source of truth for one frame.
+  The dark counterpart, reached only when the *system* is in dark mode. The in-app
+  Light/Dark/System setting lives in DataStore and cannot be read before the window exists,
+  so forcing dark on a light phone still costs one light frame. Fixing that would mean a
+  second source of truth for the setting, which is not worth one frame.
 -->
 <resources>
     <style name="Theme.Wandergent" parent="@android:style/Theme.Material.NoActionBar">

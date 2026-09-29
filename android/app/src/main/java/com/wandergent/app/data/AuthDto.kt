@@ -12,12 +12,9 @@ data class CredentialsDto(
     /** Only read on registration; the server ignores it on login. */
     @SerialName("display_name") val displayName: String = "",
     /**
-     * Also registration-only, and optional.
-     *
-     * Optional because requiring it would lock out accounts that already exist without
-     * one. What it buys is the *possibility* of recovery: with no address, a forgotten
-     * password ends the account, and the sign-up screen says so rather than letting
-     * someone find out later.
+     * Registration-only and optional -- requiring it would lock out accounts that already
+     * exist without one. With no address a forgotten password ends the account, which the
+     * sign-up screen says rather than letting someone find out later.
      */
     val email: String = "",
 )
@@ -30,11 +27,8 @@ data class AccountDto(
     @SerialName("created_at") val createdAt: String,
     val email: String = "",
     /**
-     * Whether that address has been proven to belong to whoever holds this account.
-     *
-     * Not cosmetic: **password reset only works for a proven address.** An unverified one
-     * is a takeover route -- register with a stranger's address by typo or on purpose,
-     * and without the rule the stranger can reset their way in.
+     * Whether the address is proven. **Password reset only works for a proven address** --
+     * otherwise registering with a stranger's address would be a takeover route.
      */
     @SerialName("email_verified") val emailVerified: Boolean = false,
 )

@@ -11,6 +11,9 @@ import com.wandergent.app.data.PlanResponse
 import com.wandergent.app.data.StreamFailure
 import com.wandergent.app.data.Violation
 import com.wandergent.app.data.describeFailure
+import com.wandergent.app.data.toolFailureText
+import com.wandergent.app.data.toolLabel
+import com.wandergent.app.data.violationLabel
 import com.wandergent.app.data.local.ChatTurnRepository
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.local.SavedPlanRepository
@@ -33,15 +36,17 @@ data class ToolProgress(
 data class LiveProgress(
     val stage: String? = null,
     val tools: List<ToolProgress> = emptyList(),
-    val writing: List<String> = emptyList(),
     /** Latest constraint check. Null until it has run; empty list means it passed. */
     val violations: List<Violation>? = null,
-) {
-    companion object {
-        /** Enough to show momentum without turning the screen into a log. */
-        const val MAX_WRITING = 6
-    }
-}
+    /**
+     * The one line under the progress bar, overwritten by each event. The stage above the
+     * bar says which phase the run is in; this says what is happening inside it. One line
+     * rather than a running log, which pushed the answer itself off the screen.
+     */
+    val detail: String? = null,
+    /** Whether [detail] is reporting something that went wrong, so the UI can colour it. */
+    val detailIsProblem: Boolean = false,
+)
 
 /** Where one agent reply got to. */
 sealed interface TurnState {
@@ -59,10 +64,9 @@ sealed interface TurnState {
 /**
  * One round of the conversation: what was asked, and what came back.
  *
- * Rounds are **chained**: a message sent while a plan is already on screen revises that
- * plan rather than starting over, and the revision is validated and repaired exactly
- * like a first draft. [revision] records which happened, because "I changed your day 2"
- * and "here is a whole new trip" must not look the same on screen.
+ * Rounds are **chained**: a message sent while a plan is on screen revises that plan, and
+ * the revision is validated and repaired exactly like a first draft. [revision] records
+ * which happened, so an edit does not read as a replacement.
  */
 data class Exchange(
     val id: Long,
@@ -88,17 +92,10 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private val history = ChatTurnRepository(database.chatTurnDao())
 
     /**
-     * Which local account this conversation belongs to.
-     *
-     * Set by the screen from the session rather than read here: this view model is
-     * scoped to the plan tab, and reaching into auth state from it would create a
-     * second source of truth for who is signed in.
+     * Which local account this conversation belongs to. Set by the screen from the session
+     * rather than read here, so there is one source of truth for who is signed in.
      */
     private var owner: Long = SavedPlanEntity.LEGACY_USER
-
-    /** The backend takes the id as a string; empty stays anonymous. */
-    private val userId: String
-        get() = if (owner == SavedPlanEntity.LEGACY_USER) "" else owner.toString()
 
     /**
      * ISO 4217 code the traveller settles up in, set by the screen from their settings.
@@ -112,11 +109,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private var nextId = 1L
 
     /**
-     * Adopt an account and restore its conversation.
-     *
-     * Restoring matters more than it looks: a follow-up edits the plan above it, so an
-     * empty transcript after a restart does not just lose history -- it loses the plan
-     * the user was about to change.
+     * Adopt an account and restore its conversation. A follow-up edits the plan above it,
+     * so an empty transcript after a restart loses that plan, not just the history.
      */
     fun setUser(id: Long?) {
         val next = id ?: SavedPlanEntity.LEGACY_USER
@@ -141,11 +135,9 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Start editing a plan from the library.
-     *
-     * Seeds it as an ordinary exchange rather than inventing a separate "base plan"
-     * concept: once it is in the transcript, [latestItinerary] picks it up and every
-     * existing path -- send, retry, save, the revision label -- works unchanged.
+     * Start editing a plan from the library. Seeded as an ordinary exchange rather than a
+     * separate "base plan" concept, so send, retry, save and the revision label all work
+     * unchanged.
      */
     fun reviseSaved(plan: SavedPlanEntity) {
         val response = savedPlans.decode(plan) ?: return
@@ -173,10 +165,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private fun anyRunning() = _transcript.value.any { it.state is TurnState.Running }
 
     /**
-     * The newest plan on screen -- what a follow-up message edits.
-     *
-     * The newest rather than the one being replied to: after three rounds of changes
-     * the traveller means the plan they can currently see, not the first draft.
+     * The newest plan on screen -- what a follow-up edits. Newest rather than the one being
+     * replied to: the traveller means the plan they can currently see.
      */
     private fun latestItinerary(before: Long? = null): Itinerary? = _transcript.value
         .asSequence()
@@ -200,10 +190,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Re-run one exchange in place, keeping its position in the conversation.
-     *
-     * Revisions re-run against the plan that preceded *them*, not the newest one --
-     * otherwise retrying an edit would apply it on top of its own output.
+     * Re-run one exchange in place. Revisions re-run against the plan that preceded *them*,
+     * or retrying an edit would apply it on top of its own output.
      */
     fun retry(id: Long) {
         val exchange = _transcript.value.firstOrNull { it.id == id } ?: return
@@ -232,12 +220,7 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun setState(id: Long, state: TurnState) = update(id) { it.copy(state = state) }
 
-    /**
-     * Record a finished round so it survives the process.
-     *
-     * Only on success: a failed run has nothing to revise from, and restoring an error
-     * on next launch would be noise rather than history.
-     */
+    /** Record a finished round. Only on success: a failed run has nothing to revise from. */
     private fun remember(id: Long, response: PlanResponse) {
         if (response.itinerary == null) return
         val exchange = _transcript.value.firstOrNull { it.id == id } ?: return
@@ -257,7 +240,7 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repository.stream(request, currency, previous).collect { event ->
                     events++
-                    progress = reduce(progress, event)
+                    progress = reduceProgress(progress, event)
                     when (event.type) {
                         PlanEventDto.RESULT -> event.result?.let {
                             setState(id, TurnState.Loaded(it))
@@ -275,9 +258,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
                     fallBackToNonStreaming(id, request, previous, "Connection dropped")
                 }
             } catch (e: StreamFailure) {
-                // Nothing arrived at all: the transport may not survive SSE (a proxy
-                // buffering the response, for instance), so try the plain endpoint.
-                // See [shouldFallBack] for when that is and is not worth doing.
+                // The transport may not survive SSE -- a proxy buffering the response,
+                // most often. See [shouldFallBack] for when a retry is worth it.
                 if (shouldFallBack(events, e.status)) {
                     fallBackToNonStreaming(id, request, previous, e.message ?: "Streaming failed")
                 } else {
@@ -295,8 +277,8 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
         reason: String,
     ) {
         setState(id, TurnState.Running(LiveProgress(stage = "$reason -- retrying without streaming")))
-        // The fallback carries the plan being revised too: degrading the transport must
-        // not silently degrade an edit into a from-scratch replan.
+        // Carries `previous` too: a degraded transport must not silently turn an edit
+        // into a from-scratch replan.
         when (val outcome = repository.plan(message, currency, previous)) {
             is PlanOutcome.Success -> {
                 setState(id, TurnState.Loaded(outcome.response))
@@ -306,62 +288,53 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
                 setState(id, TurnState.Error(outcome.message, outcome.retryable))
         }
     }
-
-    /** Fold one event into the live progress shown while the plan is being built. */
-    private fun reduce(current: LiveProgress, event: PlanEventDto): LiveProgress =
-        reduceProgress(current, event)
 }
 
 /**
  * Whether a stream that failed should be retried on the plain endpoint.
  *
- * Lifted out for the same reason as the reducer below: the decision is worth pinning and
- * is unreachable from a JVM test while it lives inside an `AndroidViewModel`.
+ * The fallback is for transports that cannot carry SSE, so its signal is that *nothing*
+ * arrived -- one event proves the stream works. A 4xx is a refusal, not a transport
+ * problem: the plain endpoint runs the same checks and refuses identically, and for a 429
+ * the retry spends a second slice of the caller's allowance.
  *
- * The fallback exists for transports that cannot carry SSE -- a proxy that buffers the
- * response into one lump, most often. Its signal is that *nothing* arrived: an event
- * means the stream works, and whatever went wrong afterwards is not a transport problem.
- *
- * A 4xx is the second case that is not a transport problem, and it does not announce
- * itself as one: the server answered, in full, with a refusal -- a missing API key, a
- * rejected request, a spent allowance. The plain endpoint runs the same checks and
- * refuses identically, so the retry can only ever cost a second request. For a 429 it
- * costs more: that request is counted against the caller's allowance as well, so hitting
- * the limit once spends two slices of it.
+ * A free function, like the reducer below, so a JVM test can reach it.
  */
 internal fun shouldFallBack(eventsSeen: Int, status: Int?): Boolean =
     eventsSeen == 0 && status !in 400..499
 
 /**
- * The stream reducer, lifted out of [PlanViewModel] so it can be tested.
- *
- * It touches nothing but its two arguments, but living inside an `AndroidViewModel` made it
- * unreachable from a JVM test -- constructing the view model means constructing Room, DataStore
- * and Retrofit. Everything the progress UI shows is decided here, so this is the piece worth
- * pinning.
+ * The stream reducer, lifted out of [PlanViewModel] so a JVM test can reach it without
+ * constructing Room, DataStore and Retrofit. Everything the progress UI shows is decided
+ * here, so this is the piece worth pinning.
  */
 internal fun reduceProgress(current: LiveProgress, event: PlanEventDto): LiveProgress =
         when (event.type) {
             PlanEventDto.STAGE -> current.copy(stage = event.message)
 
-            PlanEventDto.TOOL_CALL -> current.copy(
-                tools = current.tools + ToolProgress(
-                    name = event.name.orEmpty(),
-                    subject = event.arguments?.get("city")?.toString()?.trim('"'),
-                ),
-            )
+            PlanEventDto.TOOL_CALL -> {
+                val subject = event.arguments?.get("city")?.toString()?.trim('"')
+                current.copy(
+                    tools = current.tools + ToolProgress(
+                        name = event.name.orEmpty(),
+                        subject = subject,
+                    ),
+                    detail = toolLabel(event.name.orEmpty(), subject),
+                    detailIsProblem = false,
+                )
+            }
 
             PlanEventDto.TOOL_RESULT -> {
-                // Close the *first* still-running call with this name, and only that one.
-                // Tools run concurrently, so two search_places calls can be open at once;
-                // a `map` over the whole list closed both on the first result, reporting
-                // work as finished that was still in flight. Found by the reducer tests.
+                // Close the *first* still-running call with this name, and only that one:
+                // tools run concurrently, so two search_places calls can be open at once
+                // and a `map` over the list would close both on the first result.
                 val target = current.tools.indexOfFirst {
                     it.name == event.name && it.ok == null
                 }
                 if (target < 0) {
                     current
                 } else {
+                    val failed = event.ok == false
                     current.copy(
                         tools = current.tools.mapIndexed { index, tool ->
                             if (index == target) {
@@ -370,16 +343,39 @@ internal fun reduceProgress(current: LiveProgress, event: PlanEventDto): LivePro
                                 tool
                             }
                         },
+                        // A success says nothing new; the line already names the tool. A
+                        // failure has to be said -- the plan carries on without it.
+                        detail = if (failed) {
+                            "${toolLabel(event.name.orEmpty())}: ${toolFailureText(event.code)}"
+                        } else {
+                            current.detail
+                        },
+                        // Unchanged on success, so the line keeps its colour.
+                        detailIsProblem = failed || current.detailIsProblem,
                     )
                 }
             }
 
             PlanEventDto.COMPOSING -> current.copy(
-                writing = (current.writing + event.message.orEmpty())
-                    .takeLast(LiveProgress.MAX_WRITING),
+                detail = "Scheduling ${event.message.orEmpty()}",
+                detailIsProblem = false,
             )
 
-            PlanEventDto.VALIDATION -> current.copy(violations = event.violations.orEmpty())
+            PlanEventDto.VALIDATION -> {
+                val found = event.violations.orEmpty()
+                val named = found.take(2).joinToString(", ") { violationLabel(it.code) }
+                current.copy(
+                    violations = found,
+                    detail = when {
+                        // Verdict first: the line is one row and truncates, so the word
+                        // carrying the answer must not sit at the end.
+                        found.isEmpty() -> "All clear - budget, timing and routing"
+                        found.size == 1 -> "Fixing 1 problem: $named"
+                        else -> "Fixing ${found.size} problems: $named"
+                    },
+                    detailIsProblem = found.isNotEmpty(),
+                )
+            }
 
             else -> current
         }

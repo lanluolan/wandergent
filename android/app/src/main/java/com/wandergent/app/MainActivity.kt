@@ -11,8 +11,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.wandergent.app.data.LlmCredentials
-import com.wandergent.app.data.Network
 import com.wandergent.app.data.ThemeMode
 import com.wandergent.app.data.local.SettingsStore
 import com.wandergent.app.ui.AppRoot
@@ -22,17 +20,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            // Device-wide rather than per-account, so it is read here rather than
-            // inside the app shell: it has to be in force before there is an account,
-            // on the login screen.
+            // Device-wide, not per-account: it must apply on the login screen too.
             val settings = remember { SettingsStore(applicationContext) }
             val mode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.DEFAULT)
 
-            // Read here rather than on the planning screen: an anonymous run uses it
-            // too, and the network layer needs it before the first request, not when
-            // some composable happens to mount.
-            val llm by settings.llmCredentials.collectAsStateWithLifecycle(LlmCredentials.NONE)
-            LaunchedEffect(llm) { Network.llmCredentials = llm }
+            // Erase the API key the removed "AI model" screen used to store.
+            LaunchedEffect(Unit) { settings.forgetLlmCredentials() }
 
             val dark = when (mode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -40,10 +33,9 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.DARK -> true
             }
 
-            // The manifest theme picks the status bar icon colour from the *system* dark
-            // mode, which is the wrong source once the app has its own Light/Dark/System
-            // setting: force dark on a light phone and the bar keeps dark-on-dark icons.
-            // The window is the only place this can be corrected, so it is corrected here.
+            // The manifest theme takes bar icon colour from the *system* dark mode, so
+            // forcing dark on a light phone would leave dark-on-dark icons. Only the
+            // window can correct that.
             val view = LocalView.current
             SideEffect {
                 WindowCompat.getInsetsController(window, view).apply {

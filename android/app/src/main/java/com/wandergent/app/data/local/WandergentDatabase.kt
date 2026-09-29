@@ -23,11 +23,8 @@ abstract class WandergentDatabase : RoomDatabase() {
 
     companion object {
         /**
-         * v1 -> v2 adds local accounts.
-         *
-         * Written as a real migration rather than a destructive fallback: saved
-         * itineraries are the one thing in here a user would be annoyed to lose, and
-         * getting into the habit now is cheaper than retrofitting migrations later.
+         * v1 -> v2 adds local accounts. A real migration, not a destructive fallback:
+         * saved itineraries are the one thing here a user would mind losing.
          */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(connection: SQLiteConnection) {
@@ -50,11 +47,8 @@ abstract class WandergentDatabase : RoomDatabase() {
         }
 
         /**
-         * v2 -> v3 gives every saved plan an owner.
-         *
-         * Existing rows default to `0`, which the repository treats as "saved before
-         * accounts" and hands to the first account that opens the library. Defaulting
-         * to a real id is impossible here -- a migration has no session.
+         * v2 -> v3 gives every saved plan an owner. Existing rows default to `0` -- a
+         * migration has no session -- and the first account to open the library adopts them.
          */
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(connection: SQLiteConnection) {
@@ -65,11 +59,8 @@ abstract class WandergentDatabase : RoomDatabase() {
         }
 
         /**
-         * v3 -> v4 keeps the planning conversation across restarts.
-         *
-         * Added when follow-up messages started editing the plan above them: losing the
-         * transcript stopped being a cosmetic annoyance and started meaning "the plan
-         * you were about to change is gone".
+         * v3 -> v4 keeps the planning conversation across restarts. Since a follow-up
+         * edits the plan above it, losing the transcript loses that plan too.
          */
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(connection: SQLiteConnection) {
@@ -89,11 +80,9 @@ abstract class WandergentDatabase : RoomDatabase() {
         }
 
         /**
-         * v4 -> v5 records which community post a saved trip was copied from.
-         *
-         * Nullable with no default: rows that existed before this were planned here, not
-         * copied, and null says exactly that. See [SavedPlanEntity.sharedPlanId] for why
-         * the identity matters.
+         * v4 -> v5 records which community post a saved trip was copied from. Nullable with
+         * no default: older rows were planned here, not copied. See
+         * [SavedPlanEntity.sharedPlanId] for why the identity matters.
          */
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(connection: SQLiteConnection) {
@@ -104,15 +93,10 @@ abstract class WandergentDatabase : RoomDatabase() {
         /**
          * v5 -> v6 moves accounts to the server.
          *
-         * A table rebuild rather than an `ALTER TABLE ... ADD COLUMN`, because the point
-         * is what it **removes**: `passwordSalt` and `passwordHash`. Leaving dead
-         * credential columns in place is how a "quick offline login" gets reinstated
-         * against them two years later. Dropping them makes that impossible rather than
-         * discouraged.
-         *
-         * Rows are carried across with a blank `serverAccountId` -- they predate server
-         * accounts, and the first login that matches their username adopts them, so a
-         * user's saved trips stay attached to their name.
+         * A table rebuild rather than an `ALTER TABLE`, because the point is what it
+         * **removes**: `passwordSalt` and `passwordHash`. A dead credential column is how a
+         * "quick offline login" gets reinstated against it later. Rows carry across with a
+         * blank `serverAccountId`, adopted by the first login matching their username.
          */
         private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(connection: SQLiteConnection) {
@@ -140,11 +124,8 @@ abstract class WandergentDatabase : RoomDatabase() {
         }
 
         /**
-         * v6 -> v7 caches the account's email and whether it is proven.
-         *
-         * A cache, not a source of truth: the server decides, and these columns exist so
-         * the profile can say "this account cannot be recovered" without a round trip on
-         * every open. Refreshed on sign-in and whenever the address changes.
+         * v6 -> v7 caches the account's email and whether it is proven. A cache, not a
+         * source of truth: the server decides, and this is refreshed from it on sign-in.
          */
         private val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(connection: SQLiteConnection) {

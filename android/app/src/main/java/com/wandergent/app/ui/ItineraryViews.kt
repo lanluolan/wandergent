@@ -52,6 +52,7 @@ import com.wandergent.app.data.Itinerary
 import com.wandergent.app.data.PlanResponse
 import com.wandergent.app.data.RunWarning
 import com.wandergent.app.data.toolFailureText
+import com.wandergent.app.data.toolLabel
 import com.wandergent.app.data.ToolCallRecord
 import com.wandergent.app.data.ValidationReport
 import com.wandergent.app.data.formatMoney
@@ -60,15 +61,13 @@ import com.wandergent.app.data.warningText
 import java.time.DayOfWeek
 import java.time.LocalDate
 
-/**
- * Itinerary rendering shared by the plan screen and the saved-plan screen, so a saved
- * trip looks exactly like it did when it was generated.
- */
+// Itinerary rendering shared by the plan, saved and community screens, so a saved trip
+// looks exactly like it did when it was generated.
 
 /**
  * A finished plan, as the sequence of cards one agent reply expands into.
  *
- * A `LazyListScope` extension rather than a composable so each day stays its own lazy
+ * A `LazyListScope` extension rather than a composable, so each day stays its own lazy
  * item: a two-week trip must not compose every day to draw the first one.
  */
 internal fun LazyListScope.planItems(
@@ -81,7 +80,12 @@ internal fun LazyListScope.planItems(
 
     if (itinerary != null) {
         item(key = "$key-summary") { SummaryCard(itinerary) }
-        response.validation?.let { item(key = "$key-validation") { ValidationCard(it) } }
+        // Nothing to show when the plan passed cleanly -- that is the normal case.
+        response.validation?.let { report ->
+            if (!report.ok || report.advisory.isNotEmpty()) {
+                item(key = "$key-validation") { ValidationCard(report) }
+            }
+        }
         item(key = "$key-save") { SaveButton(saved, onSave) }
         itemsIndexed(itinerary.days, key = { index, _ -> "$key-day-$index" }) { index, day ->
             DayTimelineCard(day, itinerary.currency, dayNumber = index + 1)
@@ -94,27 +98,26 @@ internal fun LazyListScope.planItems(
         item(key = "$key-empty") { NoItineraryCard(response.rawReply) }
     }
 
-    // Warnings are about the run; the validation card above is about the plan. The
-    // backend keeps those two lists disjoint now, so this no longer has to strike out
-    // duplicates by comparing sentences -- it used to, because the same finding arrived
-    // in both lists and showed up twice on a live plan.
-    //
-    // `no_itinerary` is dropped: NoItineraryCard below is that message, said properly.
+    // Warnings are about the run; the validation card above is about the plan, and the
+    // backend keeps the two lists disjoint. `no_itinerary` is dropped -- NoItineraryCard
+    // below is that message, said properly.
     val runWarnings = response.warnings.filterNot { it.code == "no_itinerary" }
     if (runWarnings.isNotEmpty()) {
         item(key = "$key-warnings") { WarningsCard(runWarnings) }
     }
-    if (response.toolCalls.isNotEmpty()) {
-        item(key = "$key-tools") { ToolCallsCard(response.toolCalls) }
+    // Only the tools that came back degraded. `search_places -- ok` says nothing to a
+    // traveller; a failed lookup explains a thin-looking plan, and nothing else does.
+    val degraded = response.toolCalls.filterNot { it.ok }
+    if (degraded.isNotEmpty()) {
+        item(key = "$key-degraded") { DegradedToolsCard(degraded) }
     }
 }
 
 /**
- * What the hard-constraint check concluded about the plan being shown.
+ * What the hard-constraint check concluded, when there is something to say.
  *
- * Shown on success as well as failure: "we checked the budget, the schedule and the
- * route" is the claim that separates this from a plausible-looking guess, and a plan
- * with unresolved violations must not be presented as if it were sound.
+ * A clean pass draws nothing: it is the normal case, and the card cost a screenful above
+ * the itinerary. Unresolved violations and pace remarks still earn it.
  */
 @Composable
 private fun ValidationCard(report: ValidationReport) {
@@ -130,25 +133,17 @@ private fun ValidationCard(report: ValidationReport) {
         ),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    if (passed) Icons.Default.Check else Icons.Default.Warning,
-                    contentDescription = null,
-                )
-                Text(
-                    if (passed) "Checked: budget, timing, routing" else "${report.blocking.size} issue(s) unresolved",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-            }
-            if (passed) {
-                Text(
-                    "Total is within budget, no overlapping activities, and there is time to travel between them.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else {
+            if (!passed) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = null)
+                    Text(
+                        "${report.blocking.size} issue(s) unresolved",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
                 report.blocking.forEach {
                     Text("· ${it.message}", style = MaterialTheme.typography.bodySmall)
                 }
@@ -157,12 +152,9 @@ private fun ValidationCard(report: ValidationReport) {
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            // Pace remarks sit below the verdict either way, in plain text rather than as
-            // failures: the plan is sound, this is just what the days look like.
-            //
-            // The full message, not the short label: two activities can both be "unsociably
-            // early or late" and the label alone renders them as an identical line twice,
-            // saying nothing about which activity or when. Observed on a live plan.
+            // Plain text rather than a failure: the plan is sound, this is just what the
+            // days look like. The full message, not the short label -- two activities can
+            // share a label and would otherwise render as the same line twice.
             report.advisory.forEach {
                 Text("Note: ${it.message}", style = MaterialTheme.typography.bodySmall)
             }
@@ -188,18 +180,13 @@ private fun SaveButton(saved: Boolean, onSave: () -> Unit) {
 }
 
 /**
- * Caveats about how the plan was produced, in the traveller's terms.
- *
- * The text comes from [warningText] rather than from the wire: what the server sends is
- * a code and its numbers, which is what lets this card say "worth confirming opening
- * times" where it used to say "reached the 16-call tool budget".
+ * Caveats about how the plan was produced, in the traveller's terms. The wording comes
+ * from [warningText], not the wire -- the server sends only a code and its numbers.
  */
 @Composable
 private fun WarningsCard(warnings: List<RunWarning>) {
-    // Deduplicated on the *rendered* sentence, not on the code. Collapsing the three
-    // budget codes into one sentence is what creates the duplicate: a run that both
-    // spends its call budget and drops a call emits two distinct codes that read
-    // identically, and the reader gets the same caveat twice. Seen on a live plan.
+    // Deduplicated on the *rendered* sentence, not on the code: the three budget codes
+    // collapse into one sentence, so two distinct codes can read identically.
     val lines = warnings.map(::warningText).distinct()
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -232,25 +219,24 @@ private fun NoItineraryCard(rawReply: String?) {
 }
 
 /**
- * The agent's tool trail. Kept visible because a thin-looking plan is usually
- * explained by a degraded tool rather than by a bad model.
+ * The lookups that did not answer, and nothing else. A plan built without the forecast is
+ * thinner and the traveller has no other way to know; a call that worked is not news, and
+ * the plan itself is the evidence.
  */
 @Composable
-private fun ToolCallsCard(calls: List<ToolCallRecord>) {
-    Card(Modifier.fillMaxWidth()) {
+private fun DegradedToolsCard(calls: List<ToolCallRecord>) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Tool calls", style = MaterialTheme.typography.labelLarge)
+            Text("Built without everything", style = MaterialTheme.typography.labelLarge)
             calls.forEach { call ->
-                val suffix =
-                    if (call.ok) "ok" else "degraded: ${toolFailureText(call.code, call.error)}"
                 Text(
-                    "${call.name} — $suffix",
+                    "${toolLabel(call.name)}: ${toolFailureText(call.code, call.error)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (call.ok) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
                 )
             }
         }
@@ -314,8 +300,7 @@ internal fun DayTimelineCard(day: DayPlan, currency: String, dayNumber: Int) {
                 verticalAlignment = Alignment.Bottom,
             ) {
                 Column {
-                    // "Day 2" is what a traveller actually thinks in; the calendar date
-                    // and weekday are the supporting detail, not the headline.
+                    // "Day 2" is what a traveller thinks in; the date is supporting detail.
                     Text(
                         "Day $dayNumber",
                         style = MaterialTheme.typography.titleMedium,
@@ -364,18 +349,14 @@ internal fun DayTimelineCard(day: DayPlan, currency: String, dayNumber: Int) {
 /**
  * The day's stops on a map, numbered in visiting order.
  *
- * Absent by design when it cannot be drawn: a day with no locations, no maps key on the
- * server, or a failed request simply shows no map. The itinerary is complete without it,
- * so an error card here would be noise about a missing bonus.
- *
- * The still image stays the thing on the card -- it is one cheap request and it renders
- * on any device. Tapping it opens the interactive version, which costs a dynamic map
- * load and depends on the WebView being new enough, so it is opt-in per day rather than
- * the default.
+ * Absent by design when it cannot be drawn -- no locations, no maps key, a failed request.
+ * The itinerary is complete without it, so an error card would be noise about a missing
+ * bonus. The still image is what the card shows: one cheap request that renders anywhere.
+ * Tapping it opens the interactive version, which costs a dynamic map load.
  */
 @Composable
 private fun DayMap(day: DayPlan, dayNumber: Int) {
-    val places = day.activities.mapNotNull { it.location?.takeIf(String::isNotBlank) }
+    val places = remember(day) { DayMapClient.stops(day.activities) }
     if (places.size < 2) return  // One pin is not a route; it earns no vertical space.
 
     var bitmap by remember(places) { mutableStateOf<Bitmap?>(null) }
@@ -390,8 +371,6 @@ private fun DayMap(day: DayPlan, dayNumber: Int) {
         Box {
             Image(
                 bitmap = it.asImageBitmap(),
-                // A screen reader gets nothing from the picture, so say what it shows:
-                // which day, and how many stops are numbered on it.
                 contentDescription = "Day $dayNumber trip map, ${places.size} stops in order" +
                     if (interactiveUrl != null) ", tap to enlarge" else "",
                 contentScale = ContentScale.FillWidth,
@@ -487,9 +466,8 @@ private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
                 Text(
                     activity.title,
                     style = MaterialTheme.typography.bodyLarge,
-                    // fill = true, so the price is pushed to the right edge rather than
-                    // trailing the title. That is the whole point: costs line up in a
-                    // column you can run your eye down.
+                    // Takes the slack, so prices line up in a column down the edge
+                    // rather than trailing each title.
                     modifier = Modifier.weight(1f),
                 )
                 if (activity.estimatedCost > 0) {
@@ -501,8 +479,7 @@ private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
                 }
             }
 
-            // The venue gets its own line. Merged into a dotted run-on with the category
-            // and price it wrapped mid-word and read as one grey smear.
+            // Its own line: merged into a dotted run-on it wrapped mid-word.
             activity.location?.let {
                 Text(
                     it,
@@ -511,8 +488,7 @@ private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
                 )
             }
 
-            // The specifics that make a choice worth it -- dishes to order, exhibits
-            // worth the queue. Often empty, so it must collapse cleanly.
+            // Dishes to order, exhibits worth the queue. Often empty.
             activity.highlights.forEach { highlight ->
                 Text(
                     "· $highlight",
@@ -532,11 +508,9 @@ private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
 }
 
 /**
- * Category and indoor/outdoor as one tinted chip.
- *
- * A chip rather than an icon on purpose: the project depends on `material-icons-core`,
- * which carries ~40 common glyphs and none for restaurants, hotels or museums. Pulling
- * in `material-icons-extended` for decoration is not worth the artifact size.
+ * Category and indoor/outdoor as one tinted chip. A chip rather than an icon because
+ * `material-icons-core` has no glyph for restaurants, hotels or museums, and the extended
+ * set is not worth the artifact size for decoration.
  */
 @Composable
 private fun CategoryChip(activity: Activity) {
@@ -575,13 +549,11 @@ private fun weekdayLabel(isoDate: String): String? = runCatching {
     }
 }.getOrNull()
 
+/** The backend's category names, shortened where the traveller's word is shorter. */
 private fun categoryLabel(category: String): String = when (category) {
     "sightseeing" -> "sights"
-    "food" -> "food"
-    "transport" -> "transport"
     "accommodation" -> "stay"
-    "activity" -> "activity"
-    "rest" -> "rest"
+    "food", "transport", "activity", "rest" -> category
     else -> "other"
 }
 

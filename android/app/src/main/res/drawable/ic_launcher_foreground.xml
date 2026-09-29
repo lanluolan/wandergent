@@ -2,12 +2,10 @@
 <!--
   The mark is what the app produces: stops in visiting order, joined by a route.
 
-  Geometry notes, because adaptive icons crop harder than they look. The viewport is
-  108dp but a launcher may mask anything outside a 66dp circle centred at 54,54, so every
-  path here stays within about 28dp of that centre. The pin's hole is cut with evenOdd in
-  the same path rather than painted in the background colour, so the shape also works as
-  the Android 13+ monochrome layer, where the system supplies the colour and only alpha
-  survives.
+  The viewport is 108dp, but a launcher may mask anything outside a 66dp circle centred at
+  54,54, so every path stays within about 28dp of that centre. The pin's hole is cut with
+  evenOdd rather than painted in the background colour, so the shape also works as the
+  Android 13+ monochrome layer, where only alpha survives.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"

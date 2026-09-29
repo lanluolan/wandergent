@@ -44,10 +44,8 @@ class SavedViewModel(application: Application) : AndroidViewModel(application) {
     val undo: StateFlow<PendingUndo?> = _undo.asStateFlow()
 
     /**
-     * Delete, but keep the row in hand so it can be put back.
-     *
-     * A confirmation catches the mis-tap before it happens and the undo catches the
-     * confirmed one the user regrets a second later. Neither covers the other case.
+     * Delete, but keep the row in hand so it can be put back. The confirmation catches a
+     * mis-tap; the undo catches the deletion regretted a second later.
      */
     fun delete(plan: SavedPlanEntity) {
         viewModelScope.launch {

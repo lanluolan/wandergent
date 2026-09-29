@@ -63,26 +63,18 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * The server account id, which is what a post's `author_id` is compared against.
-     *
-     * Two ids, and conflating them was a live bug: `isMine` compared the *local* row id
-     * against an author id that had become a server uuid, so the reader's own posts
-     * showed a save button and a legacy post whose author id happened to be "1" showed a
-     * delete button. They are different namespaces and have to stay separate.
+     * A different namespace from [userId], and conflating the two was a live bug -- see
+     * [ownsCard].
      */
     private var accountId: String? = null
 
     /**
-     * What the reader is searching for.
+     * What the reader is searching for. Debounced rather than searched per keystroke --
+     * "New Orleans" would be eleven requests, and the ten thrown away can still arrive out
+     * of order and overwrite the one that matters.
      *
-     * Debounced rather than searched per keystroke: "New Orleans" is eleven requests
-     * otherwise, and the ten that are thrown away can still arrive out of order and
-     * overwrite the one that matters.
-     *
-     * **Declared above the `init` block that collects it, and that is load-bearing.**
-     * Kotlin runs property initialisers and init blocks in declaration order, so an init
-     * block reading a property declared below it sees null -- which crashed the app on
-     * launch, inside `debounce`, with a stack trace naming neither this class nor the
-     * field.
+     * **Must stay declared above the `init` block that collects it.** Kotlin runs
+     * initialisers in declaration order, so an init block reading it from below sees null.
      */
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -98,11 +90,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Tell the feed who is reading. Does not load -- see [refresh].
-     *
-     * Split apart because a feed goes stale by *time*, not by the reader changing: while
-     * this was "set the id, and reload only when it differs", a trip someone else posted
-     * while the app was open stayed invisible until the refresh button was tapped.
+     * Tell the feed who is reading. Does not load: a feed goes stale by *time*, not by the
+     * reader changing, so [refresh] is a separate call.
      */
     fun setUser(id: Long?, accountId: String?) {
         userId = id
@@ -124,9 +113,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 is CommunityOutcome.Failure ->
                     _state.update {
-                        // Keep whatever is already on screen. A feed that empties itself
-                        // because the tunnel dropped reads as "everyone deleted their
-                        // trips", which is a worse lie than a stale list with a banner.
+                        // Keep whatever is on screen: a feed that empties itself because
+                        // the tunnel dropped reads as "everyone deleted their trips".
                         it.copy(loading = false, error = outcome.message, loaded = true)
                     }
             }
@@ -134,11 +122,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Fetch the page after the one on screen.
-     *
-     * Guarded on both flags: the list scrolls while a page is in flight, so the "you have
-     * reached the end" trigger fires repeatedly and would otherwise request the same
-     * cursor several times over.
+     * Fetch the page after the one on screen. Guarded on both flags -- the end-of-list
+     * trigger fires repeatedly while a page is in flight.
      */
     fun loadMore() {
         val state = _state.value
@@ -149,9 +134,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             when (val outcome = repository.feed(cursor = cursor, destination = _query.value.trim())) {
                 is CommunityOutcome.Success -> _state.update {
-                    // Appended to whatever is on screen *now*, and de-duplicated by id: a
-                    // refresh can land between asking and answering, and a plan withdrawn
-                    // in between shifts the window.
+                    // Appended to whatever is on screen *now* and de-duplicated by id: a
+                    // refresh or a withdrawal can land between asking and answering.
                     val seen = it.cards.mapTo(mutableSetOf()) { card -> card.id }
                     it.copy(
                         cards = it.cards + outcome.value.items.filter { card -> card.id !in seen },
@@ -181,12 +165,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Save or unsave someone else's trip.
-     *
-     * Two things happen, and only one of them is the count. Saving also copies the
-     * itinerary into this account's own library, because "saved" has meant *that* since
-     * the library existed, and a heart that only moved a number on a stranger's card
-     * would be a different feature wearing the same icon.
+     * Save or unsave someone else's trip. Saving also copies the itinerary into this
+     * account's own library -- that is what "saved" has meant since the library existed.
      */
     fun toggleSave(card: SharedPlanCard) {
         val user = userId ?: run {
@@ -237,10 +217,8 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Share one of this account's own saved trips.
-     *
-     * `includeRequest` decides whether the original free-text request goes with it. It
-     * defaults to false at the call site for privacy reasons -- see [sharedRequest].
+     * Share one of this account's own saved trips. `includeRequest` decides whether the
+     * original free-text request goes with it; it defaults to false -- see [sharedRequest].
      */
     fun publish(
         plan: SavedPlanEntity,
@@ -276,7 +254,7 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Take one of your own posts down. */
     fun withdraw(card: SharedPlanCard) {
-        val user = userId ?: return
+        if (userId == null) return
         viewModelScope.launch {
             when (val outcome = repository.withdraw(card.id)) {
                 is CommunityOutcome.Success -> {
@@ -297,13 +275,12 @@ class CommunityViewModel(application: Application) : AndroidViewModel(applicatio
 }
 
 /**
- * Whether the signed-in account wrote this post, lifted out of [CommunityViewModel] to be
+ * Whether the signed-in account wrote this post. Lifted out of [CommunityViewModel] to be
  * testable.
  *
- * The comparison is deliberately narrow. `authorId` is the **server** account id; the app also
- * carries a local Room row id, and comparing the two was a live bug that showed other people's
- * posts as the reader's own, complete with a withdraw button. A blank account id is not a match
- * either: signed out is not "everything is mine".
+ * `authorId` is the **server** account id, never the local Room row id -- comparing the two
+ * once showed other people's posts as the reader's own, withdraw button and all. A blank
+ * account id matches nothing: signed out is not "everything is mine".
  */
 internal fun ownsCard(accountId: String?, card: SharedPlanCard): Boolean =
     !accountId.isNullOrEmpty() && accountId == card.authorId
