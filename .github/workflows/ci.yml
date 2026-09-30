@@ -85,7 +85,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v4.0.1
+      # v4.0.1 still requested Google's retired `tools` package by default and now
+      # exits before Gradle starts. v4.0.2+ removes that default; keep the package
+      # list explicit so a future action default cannot reintroduce the failure.
+      - uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: platform-tools
 
       # compileSdk is 37, which a runner image may not carry yet. Installing it
       # explicitly turns "missing platform" into a named failure instead of a Gradle
