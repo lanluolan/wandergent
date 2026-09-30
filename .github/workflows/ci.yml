@@ -93,8 +93,8 @@ jobs:
       #
       # The id is `android-37.0`, not `android-37`. From API 37 the platform packages
       # carry a minor version, and only the minor-qualified ids are published -- a bare
-      # `platforms;android-37` fails with "Failed to find package". `compileSdk = 37`
-      # resolves to the `.0` minor, which is what this installs.
+      # `platforms;android-37` fails with "Failed to find package". The Gradle DSL also
+      # declares minorApiLevel = 0 so AGP resolves this exact installed directory.
       - run: sdkmanager --install "platforms;android-37.0" "build-tools;37.0.0"
 
       - run: ./gradlew testDebugUnitTest assembleDebug --no-daemon

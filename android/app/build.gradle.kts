@@ -7,7 +7,14 @@ plugins {
 
 android {
     namespace = "com.wandergent.app"
-    compileSdk = 37
+    // API 37 is published as the minor-qualified platform `android-37.0`.
+    // Declaring only `compileSdk = 37` can make Linux CI look for `android-37`
+    // even though sdkmanager correctly installed `platforms;android-37.0`.
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
 
     defaultConfig {
         applicationId = "com.wandergent.app"
