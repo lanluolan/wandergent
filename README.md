@@ -50,9 +50,10 @@ the rejected alternatives behind each are in [`docs/decisions.md`](docs/decision
 **Today**: 9 live LLM eval cases cover single plans, memory, impossible budgets, one-off edits,
 five chained edits and switching to a new trip. Each report records source and suite hashes,
 pass/failure reasons, calls, tokens, elapsed time and operator-supplied cost rates.
-The current tree passes 486 offline backend tests (one opt-in MCP test deselected), Ruff,
-94 Android JVM tests and the debug APK build; the live release gate is 7/9 cases and remains red
-for two documented correctness/context failures.
+The current tree passes 513 offline backend tests (one opt-in MCP test deselected), Ruff,
+95 Android JVM tests and the debug APK build. The full live release gate remains at its last 7/9
+run; the newer tool-planning smoke is 3/5 and remains red for two measured-transfer failures, so
+the tool-efficiency acceptance claim has not been made.
 
 ## Architecture
 

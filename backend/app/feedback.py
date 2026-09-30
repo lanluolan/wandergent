@@ -41,7 +41,7 @@ def diagnostic_snapshot(result: PlanResult) -> dict:
     """A structural trace that cannot retain private text through a new schema field."""
     plan = result.itinerary
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "days": [
             [
                 {
@@ -61,6 +61,13 @@ def diagnostic_snapshot(result: PlanResult) -> dict:
         "total_estimated_cost": plan.total_estimated_cost if plan else None,
         "violations": [v.code for v in result.validation.violations] if result.validation else [],
         "tool_failures": sum(not call.ok for call in result.tool_calls),
+        "tool_usage": {
+            "requested_calls": result.tool_usage.requested_calls,
+            "executed_calls": result.tool_usage.executed_calls,
+            "cache_hits": result.tool_usage.cache_hits,
+            "contributed_calls": result.tool_usage.contributed_calls,
+            "calls_by_tool": result.tool_usage.calls_by_tool,
+        },
     }
 
 

@@ -23,8 +23,10 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
+from time import monotonic
 from typing import Any, TypedDict
 
+import httpx
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from openai import AsyncOpenAI
@@ -49,6 +51,7 @@ from app.agent.results import (
     PlanResult,
     RunWarning,
     ToolCallRecord,
+    ToolUsage,
     Usage,
     no_itinerary,
     tool_calls_dropped,
@@ -72,9 +75,18 @@ from app.agent.validation import (
 from app.config import settings
 from app.memory import store as memory_store
 from app.memory.store import PreferenceStore
-from app.tools.base import ToolOutcome
+from app.tools.base import BAD_REQUEST, ToolOutcome
+from app.tools.cache import CachedToolResult, collected_now, shared_tool_cache
 from app.tools.memory import recall_block
-from app.tools.registry import TOOL_SCHEMAS, call_tool
+from app.tools.registry import (
+    TOOL_SCHEMAS,
+    call_tool,
+    shared_cache_ttl,
+    tool_cache_key,
+    tool_capacity,
+    tool_priority,
+    uses_shared_http_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +138,12 @@ outdoor time. If the request reveals something durable about this traveller -- a
 taste, something they avoid, a constraint, who they travel with -- call \
 remember_preference so future trips start from it. If a tool reports ok=false, do not \
 retry it in a loop: carry on and record the gap in the plan's notes.
+
+Treat the tool budget as a research budget. Ask for independent weather, venue and route \
+facts together in one turn so they can run concurrently. Mark search_places as required \
+only for venues you intend to schedule; mark searches for extra alternatives optional, \
+and skip optional research when required facts are still missing. Equivalent calls are \
+normalized and cached, so never rephrase a query merely to force another lookup.
 
 After each round of searches you are given a short brief of everything verified so far \
 -- opening hours, price bands, and how far apart the places are. **Plan from that \
@@ -259,6 +277,7 @@ class PlanState(TypedDict, total=False):
 
     messages: list[dict]
     records: list[ToolCallRecord]
+    dropped_tool_names: list[str]
     warnings: list[RunWarning]
     #: Accumulated across every node that talks to the model.
     usage: Usage
@@ -274,7 +293,7 @@ class PlanState(TypedDict, total=False):
     #: it was cut off decides what the repair round is told.
     last_turn: Turn | None
     #: Results of tool calls already made this run, keyed by name + arguments.
-    tool_cache: dict[str, str]
+    tool_cache: dict[str, CachedToolResult]
     #: Venue name -> Google's opening-hours lines, harvested from `search_places`. The run
     #: already paid for this; keeping it lets the constraint layer check opening times
     #: against Google rather than against the model's account of them.
@@ -306,21 +325,84 @@ class PlanState(TypedDict, total=False):
 
 
 def _tool_key(call) -> str:
-    """Identity of a tool call: name plus arguments, order-independent."""
-    return f"{call.name}:{json.dumps(safe_arguments(call.arguments), sort_keys=True)}"
+    """Normalized identity; malformed argument text remains distinct and uncached."""
+    try:
+        arguments = json.loads(call.arguments or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return f"{call.name}:invalid:{call.arguments!r}"
+    if not isinstance(arguments, dict):
+        return f"{call.name}:invalid:{call.arguments!r}"
+    return tool_cache_key(call.name, arguments)
 
 
-def _places_in(payload: str) -> list[dict]:
+def _outcome_evidence(name: str, outcome: ToolOutcome) -> tuple[str, ...]:
+    """Small, non-sensitive identifiers used to infer whether facts reached the plan."""
+    payload = outcome.model_dump()
+    if name == "search_places":
+        return tuple(
+            str(value)
+            for place in payload.get("places") or []
+            if isinstance(place, dict)
+            for value in (place.get("name"), place.get("address"))
+            if value
+        )
+    if name == "get_weather_forecast":
+        return tuple(
+            f"{day.get('date')}\t{day.get('condition')}"
+            for day in payload.get("days") or []
+            if isinstance(day, dict) and day.get("date") and day.get("condition")
+        )
+    if name == "get_travel_time":
+        return tuple(
+            str(value) for value in (payload.get("origin"), payload.get("destination")) if value
+        )
+    return ()
+
+
+def _records_with_contribution(
+    records: list[ToolCallRecord], itinerary: Itinerary | None
+) -> list[ToolCallRecord]:
+    """Mark only uses that can be proven from the shipped structured itinerary."""
+    if itinerary is None:
+        return records
+    rendered = itinerary.model_dump_json().casefold()
+    weather_by_date = {
+        str(day.date): day.weather.casefold() for day in itinerary.days if day.weather
+    }
+    marked: list[ToolCallRecord] = []
+    for record in records:
+        used = False
+        if record.ok and record.evidence:
+            if record.name == "get_weather_forecast":
+                used = any(
+                    date_value in weather_by_date
+                    and condition.casefold() in weather_by_date[date_value]
+                    for value in record.evidence
+                    for date_value, separator, condition in (value.partition("\t"),)
+                    if separator
+                )
+            elif record.name == "search_places":
+                used = any(value.casefold() in rendered for value in record.evidence)
+            elif record.name == "get_travel_time" and len(record.evidence) >= 2:
+                used = all(value.casefold() in rendered for value in record.evidence[:2])
+        marked.append(record.model_copy(update={"contributed": used}))
+    return marked
+
+
+def _places_in(payload: str | dict) -> list[dict]:
     """The venue dicts inside a serialised `search_places` reply, or nothing.
 
     Reads the serialised reply, not the tool's return value: it is what the loop has in
     hand and the same string the model sees. Never raises -- an unreadable payload
     contributes nothing rather than failing the plan over bookkeeping.
     """
-    try:
-        parsed = json.loads(payload)
-    except (TypeError, ValueError):
-        return []
+    if isinstance(payload, dict):
+        parsed = payload
+    else:
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, ValueError):
+            return []
     # A replayed cache hit wraps the original reply one level down.
     if isinstance(parsed, dict) and "result" in parsed and "places" not in parsed:
         return _places_in(parsed.get("result") or "")
@@ -380,29 +462,48 @@ def harvest_place_addresses(tool: str, payload: str, into: dict[str, str]) -> No
             into[name] = address
 
 
-async def _execute_tool_call(call, context: dict) -> tuple[ToolCallRecord, dict]:
+async def _execute_tool_call(call, context: dict) -> tuple[ToolCallRecord, dict, CachedToolResult]:
     """Run one tool call and render both the audit record and the reply message."""
+    started = monotonic()
     try:
         arguments = json.loads(call.arguments or "{}")
     except json.JSONDecodeError as exc:
         arguments = {}
-        outcome: ToolOutcome = ToolOutcome(ok=False, error=f"arguments were not valid JSON: {exc}")
+        outcome: ToolOutcome = ToolOutcome(
+            ok=False, error=f"arguments were not valid JSON: {exc}", code=BAD_REQUEST
+        )
     else:
         if not isinstance(arguments, dict):
-            outcome = ToolOutcome(ok=False, error="arguments must be a JSON object")
+            outcome = ToolOutcome(
+                ok=False, error="arguments must be a JSON object", code=BAD_REQUEST
+            )
             arguments = {}
         else:
             outcome = await call_tool(call.name, arguments, context=context)
 
+    elapsed_ms = round((monotonic() - started) * 1000)
+    evidence = _outcome_evidence(call.name, outcome)
     record = ToolCallRecord(
         name=call.name,
         arguments=arguments,
         ok=outcome.ok,
         code=outcome.code,
         error=outcome.error,
+        duration_ms=elapsed_ms,
+        attempts=outcome.attempts,
+        evidence=list(evidence),
     )
-    reply = {"role": "tool", "tool_call_id": call.id, "content": outcome.model_dump_json()}
-    return record, reply
+    content = outcome.model_dump_json()
+    reply = {"role": "tool", "tool_call_id": call.id, "content": content}
+    cached = CachedToolResult(
+        content=content,
+        ok=outcome.ok,
+        code=outcome.code,
+        error=outcome.error,
+        evidence=evidence,
+        collected_at=collected_now(),
+    )
+    return record, reply, cached
 
 
 # --- nodes -------------------------------------------------------------------------
@@ -446,8 +547,24 @@ async def gather(state: PlanState) -> dict:
     # call must come back with a matching reply, so a message promising twenty while
     # sixteen run is malformed, not smaller -- the endpoint rejects the next request.
     allowed = max(0, MAX_TOOL_CALLS - state["calls_made"])
-    dropped = turn.tool_calls[allowed:]
-    turn.tool_calls = turn.tool_calls[:allowed]
+    dropped = []
+    if len(turn.tool_calls) > allowed:
+        # Spend the remaining quota on facts that can make or break the itinerary.
+        # Stable index tie-breaking preserves model order among equally useful calls.
+        seen = set(state.get("tool_cache") or {})
+        ranked: list[tuple[int, int, Any]] = []
+        for index, call in enumerate(turn.tool_calls):
+            key = _tool_key(call)
+            arguments = safe_arguments(call.arguments)
+            ranked.append((tool_priority(call.name, arguments, repeated=key in seen), index, call))
+            seen.add(key)
+        kept_indices = {
+            index for _, index, _ in sorted(ranked, key=lambda item: (-item[0], item[1]))[:allowed]
+        }
+        dropped = [call for index, call in enumerate(turn.tool_calls) if index not in kept_indices]
+        turn.tool_calls = [
+            call for index, call in enumerate(turn.tool_calls) if index in kept_indices
+        ]
 
     update: dict = {
         # An empty turn is left out entirely rather than sent back; see `is_empty`.
@@ -466,6 +583,10 @@ async def gather(state: PlanState) -> dict:
             *state["warnings"],
             tool_calls_dropped(MAX_TOOL_CALLS, [call.name for call in dropped], len(dropped)),
         ]
+        update["dropped_tool_names"] = [
+            *state.get("dropped_tool_names", []),
+            *(call.name for call in dropped),
+        ]
 
     if not turn.tool_calls:
         return {**update, "pending": [], "last_turn": turn}
@@ -479,24 +600,44 @@ async def gather(state: PlanState) -> dict:
 
 
 async def run_tools(state: PlanState) -> dict:
-    """Execute the pending tool calls concurrently and feed the results back.
-
-    Identical calls are answered from a per-run cache rather than made again -- observed
-    live, the model asked for the same forecast three times in one run. The replay says
-    plainly that it is a repeat, so the model moves on instead of asking a fourth time.
-    """
+    """Execute a bounded batch, reusing normalized results where they are still fresh."""
     writer = get_stream_writer()
     context = {"user_id": state.get("user_id") or ""}
     cache = dict(state.get("tool_cache") or {})
 
-    fresh = [call for call in state["pending"] if _tool_key(call) not in cache]
-    executed = dict(
-        zip(
-            (_tool_key(call) for call in fresh),
-            await asyncio.gather(*(_execute_tool_call(call, context) for call in fresh)),
-            strict=True,
-        )
-    )
+    # Collapse duplicates *before* starting tasks. The previous dict(zip(...)) collapsed
+    # their results only after both upstream calls had already been paid for.
+    unique: dict[str, Any] = {}
+    for call in state["pending"]:
+        key = _tool_key(call)
+        if key not in cache:
+            unique.setdefault(key, call)
+
+    resolved: dict[str, tuple[str, CachedToolResult, ToolCallRecord | None, float | None]] = {}
+    fresh: list[tuple[str, Any]] = []
+    for key, call in unique.items():
+        hit = shared_tool_cache.get(key) if shared_cache_ttl(call.name) > 0 else None
+        if hit is not None:
+            resolved[key] = ("shared", hit.value, None, hit.age_seconds)
+        else:
+            fresh.append((key, call))
+
+    async def execute_bounded(key: str, call) -> tuple[str, tuple]:
+        async with tool_capacity(call.name):
+            return key, await _execute_tool_call(call, context)
+
+    if fresh and any(uses_shared_http_client(call.name) for _, call in fresh):
+        timeout = httpx.Timeout(settings.tool_timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout) as batch_client:
+            context["http_client"] = batch_client
+            executed = await asyncio.gather(*(execute_bounded(key, call) for key, call in fresh))
+    elif fresh:
+        executed = await asyncio.gather(*(execute_bounded(key, call) for key, call in fresh))
+    else:
+        executed = []
+    for key, (record, _reply, value) in executed:
+        resolved[key] = ("miss", value, record, None)
+        shared_tool_cache.put(key, value, shared_cache_ttl(record.name))
 
     messages = list(state["messages"])
     records = list(state["records"])
@@ -504,32 +645,73 @@ async def run_tools(state: PlanState) -> dict:
     prices = dict(state.get("place_prices") or {})
     points = dict(state.get("place_points") or {})
     addresses = dict(state.get("place_addresses") or {})
+    fact_collected_at = state["fact_collected_at"]
+    preexisting = set(cache)
+    consumed: set[str] = set()
 
     for call in state["pending"]:
         key = _tool_key(call)
-        if key in executed:
-            record, reply = executed[key]
-            cache[key] = reply["content"]
-        else:
+        if key in preexisting or key in consumed:
+            source = "run"
+            value = cache[key]
+            age = None
             record = ToolCallRecord(
-                name=call.name, arguments=safe_arguments(call.arguments), ok=True
+                name=call.name,
+                arguments=safe_arguments(call.arguments),
+                ok=value.ok,
+                code=value.code,
+                error=value.error,
+                cache_status="run",
+                attempts=0,
+                evidence=list(value.evidence),
             )
+        else:
+            source, value, executed_record, age = resolved[key]
+            consumed.add(key)
+            cache[key] = value
+            if source == "miss":
+                assert executed_record is not None
+                record = executed_record
+            else:
+                record = ToolCallRecord(
+                    name=call.name,
+                    arguments=safe_arguments(call.arguments),
+                    ok=value.ok,
+                    code=value.code,
+                    error=value.error,
+                    cache_status="shared",
+                    cache_age_seconds=round(age or 0, 3),
+                    attempts=0,
+                    evidence=list(value.evidence),
+                )
+
+        if source == "miss":
+            reply = {"role": "tool", "tool_call_id": call.id, "content": value.content}
+        else:
+            note = (
+                "You already called this with equivalent arguments in this run."
+                if source == "run"
+                else "A recent successful result was reused within its freshness window."
+            )
+            try:
+                replayed_result = json.loads(value.content)
+            except (TypeError, ValueError):
+                replayed_result = value.content
             reply = {
                 "role": "tool",
                 "tool_call_id": call.id,
                 "content": json.dumps(
                     {
-                        "repeat": True,
-                        "note": (
-                            "You already called this with the same arguments in this run. "
-                            "The result is unchanged -- use it and move on."
-                        ),
-                        "result": cache[key],
+                        "cache": source,
+                        "repeat": source == "run",
+                        "age_seconds": round(age, 1) if age is not None else None,
+                        "note": f"{note} The result is unchanged -- use it and move on.",
+                        "result": replayed_result,
                     },
                     ensure_ascii=False,
                 ),
             }
-            logger.info("tool %s repeated with identical arguments; replayed", call.name)
+            logger.info("tool %s reused from %s cache", call.name, source)
 
         records.append(record)
         messages.append(reply)
@@ -537,6 +719,8 @@ async def run_tools(state: PlanState) -> dict:
         harvest_place_prices(record.name, reply["content"], prices)
         harvest_place_points(record.name, reply["content"], points)
         harvest_place_addresses(record.name, reply["content"], addresses)
+        if record.name == "search_places" and value.evidence and value.collected_at:
+            fact_collected_at = min(fact_collected_at, value.collected_at)
         if not record.ok:
             logger.info("tool %s degraded: %s", record.name, record.error)
         writer(PlanEvent(type="tool_result", name=record.name, ok=record.ok, code=record.code))
@@ -553,7 +737,7 @@ async def run_tools(state: PlanState) -> dict:
             hours,
             prices,
             addresses,
-            collected_at=state["fact_collected_at"],
+            collected_at=fact_collected_at,
         )
         if known > announced
         else None
@@ -582,6 +766,7 @@ async def run_tools(state: PlanState) -> dict:
         "place_prices": prices,
         "place_points": points,
         "place_addresses": addresses,
+        "fact_collected_at": fact_collected_at,
         "brief_covered": announced,
     }
 
@@ -731,6 +916,10 @@ async def finish(state: PlanState) -> dict:
     warnings = list(state["warnings"])
     report = state.get("report")
     itinerary = state.get("itinerary")
+    records = _records_with_contribution(list(state["records"]), itinerary)
+    tool_usage = ToolUsage.from_records(
+        records, dropped_tools=list(state.get("dropped_tool_names") or [])
+    )
 
     if itinerary is None:
         warnings.append(no_itinerary())
@@ -740,7 +929,8 @@ async def finish(state: PlanState) -> dict:
                 result=PlanResult(
                     itinerary=None,
                     constraints=state["constraints"],
-                    tool_calls=state["records"],
+                    tool_calls=records,
+                    tool_usage=tool_usage,
                     warnings=warnings,
                     raw_reply=state.get("raw"),
                     usage=state["usage"],
@@ -759,7 +949,8 @@ async def finish(state: PlanState) -> dict:
             result=PlanResult(
                 itinerary=itinerary,
                 constraints=state["constraints"],
-                tool_calls=state["records"],
+                tool_calls=records,
+                tool_usage=tool_usage,
                 warnings=warnings,
                 validation=report,
                 usage=state["usage"],
@@ -942,6 +1133,7 @@ async def stream_plan(
             {"role": "user", "content": request},
         ],
         "records": [],
+        "dropped_tool_names": [],
         "warnings": [],
         "usage": Usage(),
         "rounds_total": rounds,

@@ -145,6 +145,15 @@ async def test_place_search_degrades_on_http_error() -> None:
 
     assert not result.ok
     assert "unavailable" in result.error
+    assert result.code == "bad_request"
+
+
+async def test_place_search_distinguishes_rate_limit_from_outage() -> None:
+    async with make_client(lambda _: httpx.Response(429, text="slow down")) as client:
+        result = await search_places("cafe", "Boston", client=client)
+
+    assert not result.ok
+    assert result.code == "rate_limited"
 
 
 async def test_without_a_key_the_tool_says_so_and_makes_no_call(monkeypatch) -> None:
@@ -158,6 +167,15 @@ async def test_without_a_key_the_tool_says_so_and_makes_no_call(monkeypatch) -> 
 
     assert not result.ok
     assert "GOOGLE_MAPS_API_KEY" in result.error
+
+
+@pytest.mark.parametrize("arguments", [{"purpose": "urgent"}, {"limit": "many"}])
+async def test_invalid_planning_metadata_is_a_bad_request(arguments: dict) -> None:
+    async with make_client(lambda _: httpx.Response(200, json=PLACES_PAYLOAD)) as client:
+        result = await search_places("cafe", "Boston", client=client, **arguments)
+
+    assert not result.ok
+    assert result.code == "bad_request"
 
 
 # --- get_travel_time ---------------------------------------------------------------
@@ -240,6 +258,7 @@ async def test_a_country_without_transit_data_degrades_rather_than_erroring() ->
 
     assert not result.ok
     assert result.seconds is None
+    assert result.code == "no_coverage"
 
 
 async def test_an_empty_route_list_degrades_instead_of_inventing_a_number() -> None:

@@ -134,9 +134,83 @@ class ToolCallRecord(BaseModel):
     arguments: dict
     ok: bool
     code: str | None = None
+    #: `miss` executed the tool; the two hit kinds replayed a prior successful result.
+    cache_status: Literal["miss", "run", "shared"] = "miss"
+    cache_age_seconds: float | None = None
+    duration_ms: int = 0
+    attempts: int = 1
+    #: Deterministic evidence match against the shipped itinerary. False means no use
+    #: could be proved, not that the model definitely ignored the result.
+    contributed: bool = False
+    #: Candidate fact identifiers used only to derive `contributed`; never serialized.
+    evidence: list[str] = Field(default_factory=list, exclude=True)
     #: The detailed reason, for the log line at the point of failure. `exclude` keeps it
     #: out of every serialisation, so it cannot reach the client by being forgotten.
     error: str | None = Field(default=None, exclude=True)
+
+
+class ToolUsage(BaseModel):
+    """Comparable tool-efficiency counters for one run or eval case."""
+
+    requested_calls: int = 0
+    executed_calls: int = 0
+    cache_hits: int = 0
+    run_cache_hits: int = 0
+    shared_cache_hits: int = 0
+    failed_calls: int = 0
+    retried_calls: int = 0
+    contributed_calls: int = 0
+    dropped_calls: int = 0
+    duration_ms: int = 0
+    calls_by_tool: dict[str, int] = {}
+
+    @computed_field
+    @property
+    def cache_hit_rate(self) -> float:
+        handled = self.executed_calls + self.cache_hits
+        return self.cache_hits / handled if handled else 0.0
+
+    @classmethod
+    def from_records(
+        cls, records: list[ToolCallRecord], *, dropped_tools: list[str] | None = None
+    ) -> "ToolUsage":
+        dropped_tools = dropped_tools or []
+        by_tool: dict[str, int] = {}
+        for record in records:
+            by_tool[record.name] = by_tool.get(record.name, 0) + 1
+        for name in dropped_tools:
+            by_tool[name] = by_tool.get(name, 0) + 1
+        return cls(
+            requested_calls=len(records) + len(dropped_tools),
+            executed_calls=sum(record.cache_status == "miss" for record in records),
+            cache_hits=sum(record.cache_status != "miss" for record in records),
+            run_cache_hits=sum(record.cache_status == "run" for record in records),
+            shared_cache_hits=sum(record.cache_status == "shared" for record in records),
+            failed_calls=sum(not record.ok for record in records),
+            retried_calls=sum(max(0, record.attempts - 1) for record in records),
+            contributed_calls=sum(record.contributed for record in records),
+            dropped_calls=len(dropped_tools),
+            duration_ms=sum(record.duration_ms for record in records),
+            calls_by_tool=by_tool,
+        )
+
+    def plus(self, other: "ToolUsage") -> "ToolUsage":
+        by_tool = dict(self.calls_by_tool)
+        for name, count in other.calls_by_tool.items():
+            by_tool[name] = by_tool.get(name, 0) + count
+        return ToolUsage(
+            requested_calls=self.requested_calls + other.requested_calls,
+            executed_calls=self.executed_calls + other.executed_calls,
+            cache_hits=self.cache_hits + other.cache_hits,
+            run_cache_hits=self.run_cache_hits + other.run_cache_hits,
+            shared_cache_hits=self.shared_cache_hits + other.shared_cache_hits,
+            failed_calls=self.failed_calls + other.failed_calls,
+            retried_calls=self.retried_calls + other.retried_calls,
+            contributed_calls=self.contributed_calls + other.contributed_calls,
+            dropped_calls=self.dropped_calls + other.dropped_calls,
+            duration_ms=self.duration_ms + other.duration_ms,
+            calls_by_tool=by_tool,
+        )
 
 
 class PlanResult(BaseModel):
@@ -148,6 +222,7 @@ class PlanResult(BaseModel):
     constraints: TripConstraints = TripConstraints()
     itinerary: Itinerary | None = None
     tool_calls: list[ToolCallRecord] = []
+    tool_usage: ToolUsage = ToolUsage()
 
     #: How the run went, as codes the client renders. Deliberately disjoint from
     #: `validation`: this list says what the agent could not finish, that one says what

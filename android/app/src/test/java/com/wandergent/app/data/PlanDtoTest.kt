@@ -94,6 +94,27 @@ class PlanDtoTest {
     }
 
     @Test
+    fun `tool efficiency metrics survive saved response round trips`() {
+        val body = """
+            {"itinerary": null, "warnings": [],
+             "tool_calls": [{"name":"search_places","arguments":{},"ok":true,
+                              "cache_status":"shared","cache_age_seconds":12.5,
+                              "duration_ms":0,"attempts":0,"contributed":true}],
+             "tool_usage": {"requested_calls":2,"executed_calls":1,"cache_hits":1,
+                              "run_cache_hits":0,"shared_cache_hits":1,"failed_calls":0,
+                              "retried_calls":0,"contributed_calls":1,"dropped_calls":0,
+                              "duration_ms":80,"calls_by_tool":{"search_places":2},
+                              "cache_hit_rate":0.5}}
+        """.trimIndent()
+
+        val response = json.decodeFromString<PlanResponse>(body)
+
+        assertEquals("shared", response.toolCalls.single().cacheStatus)
+        assertEquals(1, response.toolUsage.sharedCacheHits)
+        assertEquals(0.5, response.toolUsage.cacheHitRate)
+    }
+
+    @Test
     fun `a warning carries the numbers behind it, not just a sentence`() {
         // The point of the whole shape: the client can say "some lookups were skipped"
         // in its own words because the parameters arrive separately from the prose.

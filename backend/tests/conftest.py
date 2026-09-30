@@ -15,17 +15,45 @@ because a key was present, and emptying `.env` turned 35 of them red at once. A 
 documented as offline must not be able to tell.
 """
 
+import os
+import shutil
+from pathlib import Path
+from uuid import uuid4
+
 import pytest
 
 from app.config import settings
 from app.ratelimit import limiter
+from app.tools.cache import shared_tool_cache
+
+TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / ".pytest-work"
+
+
+if os.name == "nt":
+
+    @pytest.fixture
+    def tmp_path():
+        """Workspace-local temp path that remains usable under the Windows sandbox.
+
+        Pytest creates its Windows base with mode 0700. In the restricted project runner
+        that directory immediately becomes inaccessible even to the creating process. A
+        normal project-local directory preserves the fixture contract without writing to
+        the user's global temp folder. Other platforms keep pytest's native fixture.
+        """
+        TEST_TEMP_ROOT.mkdir(exist_ok=True)
+        path = TEST_TEMP_ROOT / uuid4().hex
+        path.mkdir()
+        yield path
+        shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
 def _fresh_rate_limits():
     limiter.reset()
+    shared_tool_cache.clear()
     yield
     limiter.reset()
+    shared_tool_cache.clear()
 
 
 @pytest.fixture(autouse=True)

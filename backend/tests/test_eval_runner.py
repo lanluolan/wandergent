@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from app.agent.constraints import TripConstraints
-from app.agent.results import PlanResult, Usage
+from app.agent.results import PlanResult, ToolUsage, Usage
 from app.agent.schemas import Itinerary
 from app.agent.validation import ValidationReport
 from app.memory.store import PreferenceStore
@@ -50,6 +50,14 @@ async def test_setup_and_every_revision_are_counted_and_redacted(
             constraints=kwargs.get("previous_constraints") or TripConstraints(budget=100),
             validation=ValidationReport(),
             usage=Usage(llm_calls=1, prompt_tokens=10, completion_tokens=2),
+            tool_usage=ToolUsage(
+                requested_calls=2,
+                executed_calls=1,
+                cache_hits=1,
+                shared_cache_hits=1,
+                contributed_calls=1,
+                calls_by_tool={"search_places": 2},
+            ),
         )
 
     monkeypatch.setattr("evals.run.plan_trip", fake)
@@ -71,6 +79,9 @@ async def test_setup_and_every_revision_are_counted_and_redacted(
     assert report.passed
     assert report.usage["llm_calls"] == 5
     assert report.usage["total_tokens"] == 60
+    assert report.tool_usage["requested_calls"] == 10
+    assert report.tool_usage["executed_calls"] == 5
+    assert report.tool_usage["shared_cache_hits"] == 5
     assert calls[2]["previous"] is not None
     assert calls[2]["previous_constraints"] == TripConstraints(budget=100)
     assert calls[-1]["previous"] is None

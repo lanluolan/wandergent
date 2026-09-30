@@ -20,8 +20,8 @@ class ToolFailureTextTest {
     @Test
     fun `every code the backend can send has wording of its own`() {
         val codes = listOf(
-            "not_configured", "timed_out", "unavailable",
-            "no_match", "bad_request", "unknown_tool",
+            "not_configured", "timed_out", "rate_limited", "unavailable",
+            "no_match", "no_coverage", "bad_request", "unknown_tool",
         )
 
         val rendered = codes.map { toolFailureText(it) }

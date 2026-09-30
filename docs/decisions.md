@@ -2129,3 +2129,50 @@ nothing read them, and Phase 4 will add what it actually needs.
   exclusions/interests into the next trip: all three memory/plan-content checks passed. The case was
   3/4 because unrelated transfer and opening-hours validation remained red. It used 11 calls, 130,240
   tokens, 161.3 s and an estimated $0.036439. A red relevant target stopped the ladder; it was not rerun.
+
+## Bounded tool research, normalized caching and measurable value (2026-09-29)
+
+- Tool identity is name plus canonical arguments: whitespace and case are normalized, defaults are
+  explicit, travel mode is canonical, and Places `purpose` is excluded because it changes scheduling
+  priority rather than the returned facts. Duplicate calls in the same model turn are collapsed before
+  tasks start; the older implementation only collapsed their dictionary entries after both calls ran.
+- Successful read-only results use a bounded 512-entry process-local TTL cache: weather 15 minutes,
+  Places 6 hours and generic route lookups 5 minutes. Failures are replayed only inside the current run;
+  `remember_preference` is never cached. A shared hit retains the original collection time in the venue
+  brief, so reuse cannot masquerade as a fresh lookup. Redis would add deployment and consistency work
+  without helping one worker reuse nearby requests.
+- Independent calls from one model turn execute together over one HTTP connection pool. A worker-wide
+  capacity limiter allows 6 total calls, with per-tool ceilings of 2 weather, 4 Places, 4 Routes and 1
+  memory write. Post-generation route confirmation has its own 4-check batch ceiling and shares the
+  worker Routes limit, so concurrent users cannot multiply upstream fan-out beyond the advertised cap.
+- Places calls now declare `purpose=required|optional`. When a turn asks for more than the remaining
+  16-call budget, stable priority keeps weather, durable memory, scheduled-venue facts and routes ahead
+  of optional alternatives and exact repeats. The assistant is told to request independent facts in one
+  turn and not to spend quota by paraphrasing an equivalent query.
+- Failure policy is closed and observable. Timeout and service-unavailable outcomes from read-only tools
+  get one bounded retry. Rate limits, no route coverage, no match, bad parameters and missing config
+  degrade immediately; writes are never retried. HTTP 429 and generic 4xx are no longer flattened into
+  the same `unavailable` code. Android owns wording for the new `rate_limited` and `no_coverage` codes.
+- Every call records cache source, cache age, execution time, attempts and a conservative contribution
+  flag. `ToolUsage` aggregates requested/executed/dropped calls, hit rate, failures, retries, observable
+  contribution and composition per tool; eval reports add these counters beside LLM calls and tokens.
+  Contribution means a returned date, place or route can be matched to the shipped structured plan;
+  false means "not proven", not "definitely ignored".
+- Offline regression is 513 passed / 1 opt-in MCP test deselected; Ruff check and format are clean.
+  The runtime-specific suite proves normalization, TTL expiry, cross-run reuse, value-prioritized budget
+  trimming, actual parallel execution with ceilings, retry boundaries and metrics. Android adds the new
+  failure-code and metric contract coverage: 95 JVM tests and the debug APK build pass.
+- The paid targeted `specifics` run passed 6/6 in 71.3 s with 5 LLM calls and 45,644 tokens. All 10
+  requested tools executed, 9 were observably represented in the final itinerary, and none failed or
+  retried (estimated model cost $0.0139).
+- The following five-case smoke was red at 3/5: 543.1 s, 37 LLM calls and 413,689 tokens. Of 77 tool
+  requests, 76 executed, 1 hit the run cache, 58 were observably represented, 2 retried and 2 failed
+  (estimated model cost $0.1037). `specifics` and `memory-recall` shipped unresolved measured-transfer
+  gaps; the former also saw a non-JSON weather response, while `budget-tight` recovered from weather
+  timeouts and passed.
+- The previous report for those same five case IDs was 5/5, 477.1 s, 35 LLM calls and 379,198 tokens.
+  This is not a controlled A/B because live model and upstream weather variance were not isolated, so
+  the delta is not attributed solely to this change. It is nevertheless insufficient evidence for the
+  acceptance claim: implementation and offline gates are complete, but lower calls/latency with no
+  quality regression is **not demonstrated**. The red smoke was retained; no full run or best-of rerun
+  followed it.

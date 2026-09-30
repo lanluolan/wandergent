@@ -4,6 +4,7 @@ The registry is the seam between model-chosen input and our code, so every way t
 model can get a call wrong has to come back as feedback rather than an exception.
 """
 
+from app.tools.base import RATE_LIMITED, TIMED_OUT
 from app.tools.registry import TOOL_FUNCTIONS, TOOL_SCHEMAS, call_tool
 from app.tools.weather import WeatherForecast
 
@@ -43,3 +44,71 @@ async def test_unexpected_tool_exception_is_contained(monkeypatch) -> None:
 
     assert outcome.ok is False
     assert "failed unexpectedly" in outcome.error
+
+
+async def test_transient_read_failure_is_retried_once(monkeypatch) -> None:
+    calls = 0
+
+    async def flaky(city: str, **kwargs) -> WeatherForecast:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return WeatherForecast(ok=False, city=city, error="slow", code=TIMED_OUT)
+        return WeatherForecast(ok=True, city=city)
+
+    monkeypatch.setitem(TOOL_FUNCTIONS, "get_weather_forecast", flaky)
+
+    outcome = await call_tool("get_weather_forecast", {"city": "Chicago"})
+
+    assert outcome.ok
+    assert outcome.attempts == 2
+    assert calls == 2
+
+
+async def test_rate_limit_degrades_without_an_immediate_retry(monkeypatch) -> None:
+    calls = 0
+
+    async def limited(city: str, **kwargs) -> WeatherForecast:
+        nonlocal calls
+        calls += 1
+        return WeatherForecast(ok=False, city=city, error="quota", code=RATE_LIMITED)
+
+    monkeypatch.setitem(TOOL_FUNCTIONS, "get_weather_forecast", limited)
+
+    outcome = await call_tool("get_weather_forecast", {"city": "Chicago"})
+
+    assert not outcome.ok
+    assert outcome.attempts == 1
+    assert calls == 1
+
+
+async def test_memory_write_is_never_retried(monkeypatch) -> None:
+    calls = 0
+
+    async def unavailable(**kwargs):
+        nonlocal calls
+        calls += 1
+        return WeatherForecast(ok=False, city="", error="store down", code="unavailable")
+
+    monkeypatch.setitem(TOOL_FUNCTIONS, "remember_preference", unavailable)
+
+    outcome = await call_tool("remember_preference", {"preferences": []})
+
+    assert not outcome.ok
+    assert calls == 1
+
+
+async def test_http_reader_receives_the_batch_connection_pool(monkeypatch) -> None:
+    marker = object()
+    seen = None
+
+    async def fake(city: str, *, client=None) -> WeatherForecast:
+        nonlocal seen
+        seen = client
+        return WeatherForecast(ok=True, city=city)
+
+    monkeypatch.setitem(TOOL_FUNCTIONS, "get_weather_forecast", fake)
+
+    await call_tool("get_weather_forecast", {"city": "Chicago"}, context={"http_client": marker})
+
+    assert seen is marker

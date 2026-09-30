@@ -118,6 +118,17 @@ async def test_upstream_error_degrades_instead_of_raising() -> None:
 
     assert result.ok is False
     assert "unavailable" in result.error
+    assert result.code == "unavailable"
+
+
+async def test_rate_limit_has_its_own_failure_code() -> None:
+    async with make_client(lambda _: httpx.Response(429, text="slow down")) as client:
+        result = await get_weather_forecast(
+            "Chicago", "2026-08-06", "2026-08-07", client=client, today=TODAY
+        )
+
+    assert result.ok is False
+    assert result.code == "rate_limited"
 
 
 async def test_malformed_payload_degrades_instead_of_raising() -> None:

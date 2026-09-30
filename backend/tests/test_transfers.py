@@ -5,6 +5,7 @@ directions: a hop the string heuristic called impossible gets cleared when the w
 short, and one it happened to flag stays flagged with the real number attached.
 """
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -319,3 +320,28 @@ async def test_explicit_short_leg_is_measured_and_flagged(monkeypatch) -> None:
     result = await confirm_transfers(ValidationReport(violations=[violation]))
     assert result.violations[0].code == "insufficient_transfer"
     assert result.violations[0].needed_minutes == 26
+
+
+async def test_route_confirmation_parallelism_is_bounded(monkeypatch) -> None:
+    active = 0
+    peak = 0
+
+    async def fake(origin, destination, mode="WALK", **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return TravelTime(ok=True, origin=origin, destination=destination, mode=mode, seconds=60)
+
+    monkeypatch.setattr(transfers, "get_travel_time", fake)
+    report = ValidationReport(
+        violations=[
+            transfer_violation(10, origin=f"origin-{index}", destination=f"destination-{index}")
+            for index in range(10)
+        ]
+    )
+
+    await confirm_transfers(report)
+
+    assert 1 < peak <= transfers.MAX_PARALLEL_TRANSFER_CHECKS

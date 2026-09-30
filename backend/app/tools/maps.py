@@ -30,11 +30,13 @@ import httpx
 from app.config import settings
 from app.tools.base import (
     BAD_REQUEST,
+    NO_COVERAGE,
     NO_MATCH,
     NOT_CONFIGURED,
     TIMED_OUT,
     UNAVAILABLE,
     ToolOutcome,
+    http_failure_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,6 +176,15 @@ PLACES_TOOL_SCHEMA: dict = {
                         f"Defaults to '{DEFAULT_LANGUAGE}'."
                     ),
                 },
+                "purpose": {
+                    "type": "string",
+                    "enum": ["required", "optional"],
+                    "description": (
+                        "required when results will supply a venue intended for the "
+                        "itinerary; optional only for extra alternatives. Optional searches "
+                        "are dropped first when the research budget is tight."
+                    ),
+                },
             },
             "required": ["query", "near"],
             "additionalProperties": False,
@@ -260,10 +271,20 @@ async def search_places(
     near: str,
     limit: int = DEFAULT_PLACES,
     language: str = DEFAULT_LANGUAGE,
+    purpose: str = "required",
     *,
     client: httpx.AsyncClient | None = None,
 ) -> PlacesResult:
     """Find venues matching `query` in `near`. Never raises; degrades to ok=False."""
+    # Planning metadata, not part of Google's query. The orchestrator uses it to keep
+    # itinerary facts ahead of extra alternatives when the call budget is tight.
+    if purpose not in ("required", "optional"):
+        return PlacesResult(
+            ok=False,
+            query=query,
+            error="purpose must be required or optional",
+            code=BAD_REQUEST,
+        )
     if not settings.google_maps_api_key:
         return PlacesResult(ok=False, query=query, error=MISSING_KEY, code=NOT_CONFIGURED)
 
@@ -278,7 +299,15 @@ async def _search(
     client: httpx.AsyncClient, query: str, near: str, limit: int, language: str
 ) -> PlacesResult:
     text_query = f"{query} in {near}".strip()
-    count = max(1, min(int(limit or DEFAULT_PLACES), MAX_PLACES))
+    try:
+        count = max(1, min(int(limit or DEFAULT_PLACES), MAX_PLACES))
+    except (TypeError, ValueError):
+        return PlacesResult(
+            ok=False,
+            query=text_query,
+            error=f"limit must be an integer from 1 to {MAX_PLACES}",
+            code=BAD_REQUEST,
+        )
 
     try:
         response = await client.post(
@@ -300,7 +329,10 @@ async def _search(
     except httpx.HTTPError as exc:
         logger.warning("places search failed for %r: %s", text_query, exc)
         return PlacesResult(
-            ok=False, query=text_query, error=f"place search unavailable: {exc}", code=UNAVAILABLE
+            ok=False,
+            query=text_query,
+            error=f"place search unavailable: {exc}",
+            code=http_failure_code(exc),
         )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected places payload for %r: %s", text_query, exc)
@@ -449,7 +481,10 @@ async def _render(
     except httpx.HTTPError as exc:
         logger.warning("static map failed for %s: %s", places, exc)
         return StaticMap(
-            ok=False, places=places, error=f"map service unavailable: {exc}", code=UNAVAILABLE
+            ok=False,
+            places=places,
+            error=f"map service unavailable: {exc}",
+            code=http_failure_code(exc),
         )
 
     if not response.headers.get("content-type", "").startswith("image"):
@@ -740,7 +775,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error=f"route service unavailable: {exc}",
-            code=UNAVAILABLE,
+            code=http_failure_code(exc),
         )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected route payload for %s -> %s: %s", origin, destination, exc)
@@ -762,7 +797,7 @@ async def _route(
             destination=destination,
             mode=mode,
             error=f"no {mode.lower()} route found between these places",
-            code=NO_MATCH,
+            code=NO_COVERAGE,
         )
 
     route = routes[0]

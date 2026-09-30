@@ -197,9 +197,29 @@ timeout — the 10 s default cuts it off mid-flight.
         "start_date": "2026-09-14",
         "end_date": "2026-09-15"
       },
-      "ok": true
+      "ok": true,
+      "code": null,
+      "cache_status": "miss",
+      "cache_age_seconds": null,
+      "duration_ms": 412,
+      "attempts": 1,
+      "contributed": true
     }
   ],
+  "tool_usage": {
+    "requested_calls": 1,
+    "executed_calls": 1,
+    "cache_hits": 0,
+    "run_cache_hits": 0,
+    "shared_cache_hits": 0,
+    "failed_calls": 0,
+    "retried_calls": 0,
+    "contributed_calls": 1,
+    "dropped_calls": 0,
+    "duration_ms": 412,
+    "calls_by_tool": {"get_weather_forecast": 1},
+    "cache_hit_rate": 0.0
+  },
   "warnings": [],
   "raw_reply": null,
   "validation": {
@@ -216,8 +236,10 @@ timeout — the 10 s default cuts it off mid-flight.
 - **`run_id`** is an opaque 32-character id for feedback. Show feedback controls only when `feedback_available=true`; anonymous runs and storage failures return false.
 - **Costs are computed server-side** from the activities. Always present in responses, ignored if sent inbound.
 - **`tool_calls` is an audit trail** in call order, with `ok=false` + a `code` when a tool degraded. A thin-looking plan is usually explained here.
-  - Codes: `not_configured`, `timed_out`, `unavailable`, `no_match`, `bad_request`, `unknown_tool`. **The code is what crosses; the tool's own reason does not.** That sentence is written for the model and quotes upstream, so sending it once put a raw Open-Meteo URL and a link to MDN's page on HTTP 400 onto a traveller's itinerary. Render your own wording from the code.
+  - `cache_status` is `miss` (executed), `run` (same planning run) or `shared` (successful read reused inside its TTL). Shared hits carry `cache_age_seconds`; `attempts` shows the bounded retry count and `duration_ms` measures actual execution. `contributed=true` means a returned date/place/route can be matched deterministically to the shipped itinerary; false means no use was provable, not that the model certainly ignored it.
+  - Codes: `not_configured`, `timed_out`, `rate_limited`, `unavailable`, `no_match`, `no_coverage`, `bad_request`, `unknown_tool`. **The code is what crosses; the tool's own reason does not.** `no_match` is a valid empty search; `no_coverage` means the requested route mode is unavailable. Render your own wording from the code.
   - `error` still appears on trips saved before this change. Treat it as a legacy fallback, not a field to depend on.
+- **`tool_usage` makes research efficiency comparable** without retaining arguments or upstream payloads: requested versus actually executed calls, per-run/shared cache hits, retry/failure/drop counts, deterministically observed contribution, total tool wall time and call composition. `cache_hit_rate` uses handled calls as its denominator; dropped calls remain visible separately.
 - **`warnings`** are notes about the **run**, distinct from `itinerary.notes` (travel advice) and from `validation` (what is wrong with the *plan*). Those three lists do not overlap: until 2026-08-18 the validation findings were restated here as well, and every client had to suppress the duplicates by comparing sentences.
   - Each entry is `{"code", "detail", "budget", "dropped_calls", "dropped_tools"}`. **Render from `code`; `detail` is English aimed at whoever is debugging** — `reached the 16-call tool budget; skipped 3 further call(s) to search_places` is not something to put in front of a traveller. Fall back to `detail` only for a code you do not recognise.
   - Codes: `tool_calls_dropped` (the model asked for more calls than the budget had left, so some were never made — `dropped_calls` and `dropped_tools` say how many and to what), `tool_calls_spent` and `tool_rounds_spent` (a ceiling ended the research phase; `budget` is the ceiling), `no_itinerary`. All parameters are present on every entry, `null` or `[]` where they do not apply.

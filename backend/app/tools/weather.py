@@ -22,6 +22,7 @@ from app.tools.base import (
     TIMED_OUT,
     UNAVAILABLE,
     ToolOutcome,
+    http_failure_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -341,7 +342,10 @@ async def _forecast(
     except httpx.HTTPError as exc:
         logger.warning("weather lookup failed for %s: %s", city, exc)
         return WeatherForecast(
-            ok=False, city=city, error=f"weather service unavailable: {exc}", code=UNAVAILABLE
+            ok=False,
+            city=city,
+            error=f"weather service unavailable: {exc}",
+            code=http_failure_code(exc),
         )
     except (KeyError, TypeError, ValueError) as exc:
         logger.warning("unexpected weather payload for %s: %s", city, exc)

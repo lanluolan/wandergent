@@ -50,6 +50,7 @@ data class PlanResponse(
     val constraints: TripConstraints? = null,
     val itinerary: Itinerary? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCallRecord> = emptyList(),
+    @SerialName("tool_usage") val toolUsage: ToolUsage = ToolUsage(),
     val warnings: List<@Serializable(with = TolerantRunWarning::class) RunWarning> = emptyList(),
     @SerialName("raw_reply") val rawReply: String? = null,
     val validation: ValidationReport? = null,
@@ -173,6 +174,27 @@ data class ToolCallRecord(
     val ok: Boolean,
     val code: String? = null,
     val error: String? = null,
+    @SerialName("cache_status") val cacheStatus: String = "miss",
+    @SerialName("cache_age_seconds") val cacheAgeSeconds: Double? = null,
+    @SerialName("duration_ms") val durationMs: Int = 0,
+    val attempts: Int = 1,
+    val contributed: Boolean = false,
+)
+
+@Serializable
+data class ToolUsage(
+    @SerialName("requested_calls") val requestedCalls: Int = 0,
+    @SerialName("executed_calls") val executedCalls: Int = 0,
+    @SerialName("cache_hits") val cacheHits: Int = 0,
+    @SerialName("run_cache_hits") val runCacheHits: Int = 0,
+    @SerialName("shared_cache_hits") val sharedCacheHits: Int = 0,
+    @SerialName("failed_calls") val failedCalls: Int = 0,
+    @SerialName("retried_calls") val retriedCalls: Int = 0,
+    @SerialName("contributed_calls") val contributedCalls: Int = 0,
+    @SerialName("dropped_calls") val droppedCalls: Int = 0,
+    @SerialName("duration_ms") val durationMs: Int = 0,
+    @SerialName("calls_by_tool") val callsByTool: Map<String, Int> = emptyMap(),
+    @SerialName("cache_hit_rate") val cacheHitRate: Double = 0.0,
 )
 
 /** FastAPI's error envelope, used for every non-2xx response. */

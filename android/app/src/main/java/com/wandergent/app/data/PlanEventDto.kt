@@ -75,8 +75,10 @@ fun toolLabel(name: String, subject: String? = null): String = when (name) {
 fun toolFailureText(code: String?, legacy: String? = null): String = when (code) {
     "not_configured" -> "not set up on this server"
     "timed_out" -> "took too long"
+    "rate_limited" -> "is temporarily rate limited"
     "unavailable" -> "the service was unreachable"
     "no_match" -> "nothing matched"
+    "no_coverage" -> "has no coverage for this request"
     "bad_request" -> "the request could not be answered"
     "unknown_tool" -> "not available on this server"
     else -> legacy ?: "did not complete"

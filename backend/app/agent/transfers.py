@@ -25,12 +25,14 @@ from datetime import UTC, date, datetime, time, timedelta
 from app.agent.validation import ValidationReport, Violation
 from app.config import settings
 from app.tools.maps import get_travel_time, local_utc_offset
+from app.tools.registry import tool_capacity
 
 logger = logging.getLogger(__name__)
 
 # Slack on top of the measured time, for finding the door and paying the bill.
 TRANSFER_MARGIN_MINUTES = 5
 MAX_TRANSFER_CHECKS = 16
+MAX_PARALLEL_TRANSFER_CHECKS = 4
 
 
 def _needs_confirming(violation: Violation) -> bool:
@@ -108,20 +110,24 @@ async def confirm_transfers(
         logger.info("no local offset; preserving transfer findings")
         return report
 
+    limiter = asyncio.Semaphore(MAX_PARALLEL_TRANSFER_CHECKS)
+
+    async def measure_bounded(violation: Violation):
+        async with limiter:
+            async with tool_capacity("get_travel_time"):
+                return await _measure(
+                    violation.origin or "",
+                    violation.destination or "",
+                    _departure_instant(violation.day, violation.depart_at_minute, offset)
+                    if offset is not None
+                    else None,
+                    modes=((violation.travel_mode,) if violation.travel_mode else ("WALK",))
+                    if not allowed_modes or (violation.travel_mode or "WALK") in allowed_modes
+                    else (),
+                )
+
     measured = await asyncio.gather(
-        *(
-            _measure(
-                v.origin or "",
-                v.destination or "",
-                _departure_instant(v.day, v.depart_at_minute, offset)
-                if offset is not None
-                else None,
-                modes=((v.travel_mode,) if v.travel_mode else ("WALK",))
-                if not allowed_modes or (v.travel_mode or "WALK") in allowed_modes
-                else (),
-            )
-            for v in candidates
-        ),
+        *(measure_bounded(v) for v in candidates),
         return_exceptions=True,
     )
 

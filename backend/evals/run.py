@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from app.agent.orchestrator import PlanningError, plan_trip
-from app.agent.results import Usage
+from app.agent.results import ToolUsage, Usage
 from app.config import settings
 from app.memory.store import PreferenceStore
 from app.tools import memory as memory_tool
@@ -43,7 +43,7 @@ def diagnostic_snapshot(result) -> dict:
     plan = result.itinerary
     constraints = getattr(result, "constraints", None)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "days": [
             [
                 {
@@ -65,6 +65,7 @@ def diagnostic_snapshot(result) -> dict:
         if result.validation
         else [],
         "tool_failures": sum(not call.ok for call in result.tool_calls),
+        "tool_usage": result.tool_usage.model_dump(),
     }
 
 
@@ -76,6 +77,7 @@ class CaseReport:
     checks_run: int = 0
     seconds: float = 0.0
     usage: dict = field(default_factory=dict)
+    tool_usage: dict = field(default_factory=dict)
     error: str | None = None
     turns: list[dict] = field(default_factory=list)
     failure_categories: list[str] = field(default_factory=list)
@@ -89,13 +91,14 @@ async def run_case(
     report = CaseReport(id=case.id)
     started = time.monotonic()
     usage = Usage()
+    tool_usage = ToolUsage()
     # The CLI injects an isolated store; tests also replace this module's binding.
     memory = memory or memory_tool.default_store
     if case.user_id:
         await memory.forget(case.user_id)
 
     async def run(request: str, previous_result=None):
-        nonlocal usage
+        nonlocal tool_usage, usage
         previous = previous_result.itinerary if previous_result is not None else None
         previous_constraints = getattr(previous_result, "constraints", None)
         kwargs = {
@@ -111,6 +114,7 @@ async def run_case(
             kwargs["previous_constraints"] = previous_constraints
         result = await plan_trip(request, **kwargs)
         usage = usage.plus(result.usage)
+        tool_usage = tool_usage.plus(result.tool_usage)
         report.turns.append(diagnostic_snapshot(result))
         if any(not call.ok for call in result.tool_calls):
             report.failure_categories.append("tool_error")
@@ -154,6 +158,7 @@ async def run_case(
     finally:
         report.seconds = time.monotonic() - started
         report.usage = usage.model_dump()
+        report.tool_usage = tool_usage.model_dump()
     if report.failures:
         # This is a triage candidate, not proof of which component caused the failure.
         report.failure_categories.append("needs_review")
@@ -164,27 +169,42 @@ async def run_case(
 
 def render(reports: list[CaseReport]) -> None:
     print()
-    print(f"{'case':<26} {'result':<8} {'checks':<8} {'time':>7} {'calls':>6} {'tokens':>8}")
-    print("-" * 68)
+    print(
+        f"{'case':<26} {'result':<8} {'checks':<8} {'time':>7} {'llm':>5} "
+        f"{'tools':>7} {'hit':>5} {'tokens':>8}"
+    )
+    print("-" * 82)
 
     total = Usage()
+    total_tools = ToolUsage()
     for report in reports:
         # total_tokens is computed, so it cannot be fed back into the constructor.
         usage = Usage(**{k: v for k, v in report.usage.items() if k != "total_tokens"})
         total = total.plus(usage)
+        raw_tools = {k: v for k, v in report.tool_usage.items() if k != "cache_hit_rate"}
+        tools = ToolUsage(**raw_tools)
+        total_tools = total_tools.plus(tools)
         outcome = "PASS" if report.passed else ("ERROR" if report.error else "FAIL")
         passed_count = report.checks_run - len(report.failures)
         print(
             f"{report.id:<26} {outcome:<8} {f'{passed_count}/{report.checks_run}':<8}"
-            f" {report.seconds:>6.1f}s {usage.llm_calls:>6} {usage.total_tokens:>8}"
+            f" {report.seconds:>6.1f}s {usage.llm_calls:>5} "
+            f"{f'{tools.executed_calls}/{tools.requested_calls}':>7} "
+            f"{tools.cache_hit_rate:>4.0%} {usage.total_tokens:>8}"
         )
 
-    print("-" * 68)
+    print("-" * 82)
     passed = sum(1 for report in reports if report.passed)
     print(
         f"{passed}/{len(reports)} cases passed | "
         f"{total.llm_calls} LLM calls | {total.total_tokens} tokens "
         f"({total.cached_prompt_tokens} cached prompt, {total.reasoning_tokens} reasoning)"
+    )
+    print(
+        f"tools: {total_tools.executed_calls}/{total_tools.requested_calls} executed, "
+        f"{total_tools.cache_hits} cache hits ({total_tools.cache_hit_rate:.0%}), "
+        f"{total_tools.contributed_calls} observably used, "
+        f"{total_tools.retried_calls} retries, {total_tools.failed_calls} failures"
     )
     if reports and all(report.cost_usd is not None for report in reports):
         print(f"estimated model cost: ${sum(report.cost_usd for report in reports):.4f}")
