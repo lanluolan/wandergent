@@ -18,6 +18,7 @@ from app.agent.events import PlanEvent
 from app.agent.results import Usage
 from app.agent.schemas import Itinerary
 from app.config import settings
+from app.observability import span
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,37 @@ def _read_usage(raw, model: str) -> Usage:
 
 
 async def stream_turn(
+    client: AsyncOpenAI,
+    model: str,
+    turn: Turn,
+    **kwargs,
+) -> AsyncIterator[PlanEvent]:
+    with span(
+        f"chat {model}",
+        **{
+            "openinference.span.kind": "LLM",
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.model": model,
+        },
+    ) as record:
+        try:
+            async for event in _stream_turn(client, model, turn, **kwargs):
+                yield event
+        finally:
+            record.attributes.update(
+                {
+                    "gen_ai.usage.input_tokens": turn.usage.prompt_tokens,
+                    "gen_ai.usage.output_tokens": turn.usage.completion_tokens,
+                    "gen_ai.usage.cache_read.input_tokens": turn.usage.cached_prompt_tokens,
+                    "gen_ai.usage.reasoning.output_tokens": turn.usage.reasoning_tokens,
+                    "llm.token_count.prompt": turn.usage.prompt_tokens,
+                    "llm.token_count.completion": turn.usage.completion_tokens,
+                    "wandergent.finish_reason": turn.finish_reason,
+                }
+            )
+
+
+async def _stream_turn(
     client: AsyncOpenAI,
     model: str,
     turn: Turn,

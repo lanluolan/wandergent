@@ -132,6 +132,34 @@ def test_transport_steps_are_exempt() -> None:
     assert "outside_opening_hours" not in codes(itinerary)
 
 
+def test_optional_leading_article_does_not_hide_the_real_venue_hours():
+    itinerary = plan("09:00", "10:00")
+    assert "outside_opening_hours" in codes(
+        itinerary, {"The Art Institute of Chicago": ART_INSTITUTE}
+    )
+
+
+def test_exact_location_wins_over_incidental_museum_name_in_title():
+    itinerary = plan("09:00", "10:00", title="Breakfast before Art Institute of Chicago")
+    itinerary.days[0].activities[0].location = "Morning Diner"
+    assert "outside_opening_hours" not in codes(
+        itinerary,
+        {"Art Institute of Chicago": ART_INSTITUTE, "Morning Diner": ["Monday: 08:00–12:00"]},
+    )
+
+
+def test_embedded_latin_substring_does_not_attach_another_venues_hours():
+    itinerary = plan("09:00", "10:00", title="SuperAlinea")
+    assert "outside_opening_hours" not in codes(itinerary, {"Alinea": ["Monday: Closed"]})
+
+
+def test_equal_rank_conflicting_matches_do_not_depend_on_result_order():
+    itinerary = plan("09:00", "10:00", title="Choose Alpha Museum or Bravo Museum")
+    known = {"Alpha Museum": ["Monday: Closed"], "Bravo Museum": ["Monday: 08:00–12:00"]}
+    assert "outside_opening_hours" not in codes(itinerary, known)
+    assert "outside_opening_hours" not in codes(itinerary, dict(reversed(list(known.items()))))
+
+
 # --- harvesting -------------------------------------------------------------------
 
 
@@ -322,7 +350,10 @@ async def test_an_unrepaired_closure_ships_as_a_warning_not_a_silent_pass(
         ]
     )
 
-    result = await plan_trip("art museums in Chicago", client=llm, model="test-model", today=TODAY)
+    # A fixed requested time must not be overridden by the new scheduling fallback.
+    result = await plan_trip(
+        "art museums in Chicago at 09:00", client=llm, model="test-model", today=TODAY
+    )
 
     assert result.validation is not None and not result.validation.ok
     assert any(

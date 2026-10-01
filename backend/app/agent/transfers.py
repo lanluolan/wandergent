@@ -24,6 +24,8 @@ from datetime import UTC, date, datetime, time, timedelta
 
 from app.agent.validation import ValidationReport, Violation
 from app.config import settings
+from app.observability import route_facts, span
+from app.tools.cache import collected_now
 from app.tools.maps import get_travel_time, local_utc_offset
 from app.tools.registry import tool_capacity
 
@@ -49,11 +51,41 @@ async def _measure(
     destination: str,
     depart_at: datetime | None = None,
     modes: tuple[str, ...] = ("WALK",),
+    planned_day: date | None = None,
 ) -> tuple[int, str] | None:
     """Measure only the modes justified by the request and the scheduled leg."""
-    results = await asyncio.gather(
-        *(get_travel_time(origin, destination, mode, depart_at=depart_at) for mode in modes)
-    )
+
+    async def measure(mode):
+        with span(
+            "tool.confirm_route",
+            **{
+                "openinference.span.kind": "TOOL",
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": "get_travel_time",
+                "wandergent.route.mode": mode,
+            },
+        ) as record:
+            result = await get_travel_time(origin, destination, mode, depart_at=depart_at)
+            record.attributes["wandergent.tool.ok"] = result.ok
+            if not result.ok:
+                record.error_type = result.code or "tool_error"
+                record.attributes["error.type"] = record.error_type
+            else:
+                record.attributes["wandergent.route.seconds"] = result.seconds
+            route_facts().append(
+                {
+                    "origin": origin,
+                    "destination": destination,
+                    "mode": mode,
+                    "seconds": result.seconds if result.ok else None,
+                    "collected_at": collected_now(),
+                    "departure": depart_at.isoformat() if depart_at else None,
+                    "day": str(planned_day) if planned_day else None,
+                }
+            )
+            return result
+
+    results = await asyncio.gather(*(measure(mode) for mode in modes))
     usable = [
         (result.seconds, result.mode)
         for result in results
@@ -103,9 +135,11 @@ async def confirm_transfers(
     # One offset for the whole report: every hop is in the same city and the lookup costs
     # two calls. Without it we cannot preserve the plan's local departure time, so every
     # finding remains unchanged rather than being cleared by a misleading measurement.
-    offset = await local_utc_offset(
-        candidates[0].origin or "", next((v.day for v in candidates if v.day), None)
-    )
+    with span("tool.local_utc_offset", **{"openinference.span.kind": "TOOL"}) as record:
+        offset = await local_utc_offset(
+            candidates[0].origin or "", next((v.day for v in candidates if v.day), None)
+        )
+        record.attributes["wandergent.tool.ok"] = offset is not None
     if offset is None:
         logger.info("no local offset; preserving transfer findings")
         return report
@@ -124,6 +158,7 @@ async def confirm_transfers(
                     modes=((violation.travel_mode,) if violation.travel_mode else ("WALK",))
                     if not allowed_modes or (violation.travel_mode or "WALK") in allowed_modes
                     else (),
+                    planned_day=violation.day,
                 )
 
     measured = await asyncio.gather(
@@ -134,7 +169,7 @@ async def confirm_transfers(
     verdicts: dict[int, tuple[int, str] | None] = {}
     for violation, outcome in zip(candidates, measured, strict=False):
         if isinstance(outcome, BaseException):
-            logger.warning("transfer confirmation failed: %s", outcome)
+            logger.warning("transfer confirmation failed type=%s", type(outcome).__name__)
             verdicts[id(violation)] = None
         else:
             verdicts[id(violation)] = outcome
@@ -170,11 +205,14 @@ async def confirm_transfers(
                 update={
                     "code": "insufficient_transfer",
                     "needed_minutes": needed,
+                    "travel_mode": mode,
                     "message": (
                         f"On {violation.day}, getting from {violation.origin} to "
                         f"{violation.destination} takes about {minutes} minutes by "
                         f"{mode.lower()}, but the schedule leaves {gap}. Allow at least "
-                        f"{needed} minutes, move one of them, or add a transport step."
+                        f"{needed} minutes between the real stops. A transport label alone "
+                        "does not create time. To use another permitted mode, schedule a "
+                        "separate transport activity with travel_mode; it will be measured again."
                     ),
                 }
             )

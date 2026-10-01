@@ -23,6 +23,7 @@ class TripConstraints(BaseModel):
     days: int | None = Field(default=None, ge=1, le=60)
     travelers: int | None = Field(default=None, ge=1, le=100)
     allowed_modes: list[TravelMode] | None = Field(default=None, min_length=1)
+    lodging_arranged: bool | None = None
 
     @model_validator(mode="after")
     def consistent_dates(self) -> "TripConstraints":
@@ -93,6 +94,20 @@ def resolve_constraints(
         r"\b(?:no driving|no car|do not drive|public transport only|transit only)\b|不开车", text
     ):
         values["allowed_modes"] = ["WALK", "TRANSIT"]
+    for clause in re.split(r"[.;\n]", text):
+        lodging = r"(?:lodging|accommodation|hotel)"
+        if re.search(
+            rf"\b{lodging}\s+(?:is\s+)?not\s+(?:already\s+)?(?:arranged|booked|handled)\b"
+            rf"|\b(?:book|find|choose)\s+(?:a\s+|the\s+)?{lodging}\b",
+            clause,
+        ):
+            values["lodging_arranged"] = False
+        elif not re.search(r"\b(?:not|never|assume|if|unless|maybe|might)\b", clause) and re.search(
+            rf"\b{lodging}\s+(?:is\s+)?already\s+(?:arranged|booked|handled)\b"
+            rf"|\bi\s+have\s+(?:already\s+)?booked\s+(?:a\s+|the\s+)?{lodging}\b",
+            clause,
+        ):
+            values["lodging_arranged"] = True
     if currency and not values.get("currency"):
         values["currency"] = currency.upper()
     if confirmed is not None:

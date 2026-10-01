@@ -134,7 +134,13 @@ async def test_a_second_repair_can_finish_an_imperfect_first_repair() -> None:
 
 
 async def test_a_malformed_repair_keeps_the_original_plan() -> None:
-    llm = FakeLLM([completion(content=OVER_BUDGET), completion(content="sorry, I cannot")])
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content="sorry, I cannot"),
+            completion(content="invalid"),
+        ]
+    )
 
     events = await collect(llm)
     result = events[-1].result
@@ -143,6 +149,77 @@ async def test_a_malformed_repair_keeps_the_original_plan() -> None:
     assert result.itinerary.total_estimated_cost == 5000.0
     assert not result.validation.ok
     assert any(v.code == "over_budget" for v in result.validation.violations)
+    assert len(llm.requests) == 3
+
+
+async def test_format_correction_recovers_a_partial_repair_and_revalidates():
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content='{"days":[]}'),
+            completion(content=WITHIN_BUDGET),
+        ]
+    )
+    events = await collect(llm)
+    assert events[-1].result.validation.ok
+    assert events[-1].result.itinerary.total_estimated_cost == 200
+    assert len([e for e in events if e.type == "validation"]) == 2
+    assert "COMPLETE itinerary" in llm.requests[2]["messages"][-1]["content"]
+    assert "destination" in llm.requests[2]["messages"][-1]["content"]
+
+
+async def test_format_correction_does_not_bypass_remaining_constraints():
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content="invalid"),
+            completion(content=OVER_BUDGET),
+            completion(content=OVER_BUDGET),
+            completion(content=OVER_BUDGET),
+        ]
+    )
+    events = await collect(llm)
+    assert not events[-1].result.validation.ok
+    assert len(llm.requests) == 5  # initial + three constraint repairs + one format correction
+    assert len([e for e in events if e.type == "validation"]) == 4
+
+
+async def test_format_allowance_is_shared_across_constraint_repairs():
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content="invalid"),
+            completion(content=OVER_BUDGET),
+            completion(content="invalid again"),
+        ]
+    )
+    events = await collect(llm)
+    assert len(llm.requests) == 4
+    assert events[-1].result.itinerary.total_estimated_cost == 5000
+    assert not events[-1].result.validation.ok
+
+
+async def test_format_recovery_cannot_raise_request_owned_budget_to_pass():
+    inflated = itinerary_json(cost=5000, budget=10000)
+    llm = FakeLLM(
+        [
+            completion(content=OVER_BUDGET),
+            completion(content="invalid"),
+            completion(content=inflated),
+            completion(content=inflated),
+            completion(content=inflated),
+        ]
+    )
+    events = [
+        event
+        async for event in stream_plan(
+            "1 day in Chicago, budget 100 USD", client=llm, model="test-model", today=TODAY
+        )
+    ]
+    assert events[-1].result.constraints.budget == 100
+    assert not events[-1].result.validation.ok
+    assert any(v.code == "over_budget" for v in events[-1].result.validation.violations)
+    assert len(llm.requests) == 5
 
 
 async def test_a_feasible_plan_skips_the_repair_round() -> None:

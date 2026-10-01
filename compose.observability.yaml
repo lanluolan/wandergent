@@ -1,0 +1,17 @@
+# Optional local observation stack, separate from the application deployment.
+# docker compose -f compose.observability.yaml up -d
+# Docker image/container storage is outside the workspace; obtain permission first.
+services:
+  phoenix:
+    image: arizephoenix/phoenix:20.1.0
+    ports:
+      - "127.0.0.1:6006:6006"
+  collector:
+    image: otel/opentelemetry-collector:0.145.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+    depends_on:
+      - phoenix

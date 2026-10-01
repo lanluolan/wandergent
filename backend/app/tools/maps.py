@@ -71,6 +71,7 @@ PLACES_FIELD_MASK = ",".join(
         # reads as a fine recommendation.
         "places.regularOpeningHours",
         "places.businessStatus",
+        "places.types",
     )
 )
 ROUTES_FIELD_MASK = "routes.duration,routes.distanceMeters"
@@ -115,6 +116,8 @@ class Place(ToolOutcome):
     #: Per-weekday opening text as Google renders it, e.g. "Monday: Closed". Empty when
     #: Google has no hours for the place, which is common for parks and viewpoints.
     opening_hours: list[str] = []
+    #: Observed Google types, used to avoid replacing a restaurant with an unrelated venue.
+    types: list[str] = []
     latitude: float | None = None
     longitude: float | None = None
     rating: float | None = None
@@ -248,6 +251,7 @@ def _to_place(raw: dict[str, Any]) -> Place:
         name=(raw.get("displayName") or {}).get("text") or "unknown",
         address=raw.get("formattedAddress"),
         opening_hours=list(hours),
+        types=[value for value in raw.get("types") or [] if isinstance(value, str)],
         latitude=location.get("latitude"),
         longitude=location.get("longitude"),
         rating=raw.get("rating"),

@@ -69,6 +69,9 @@ def _pinned_llm_settings(monkeypatch):
     monkeypatch.setattr(settings, "openai_base_url", "https://api.example.test/v1")
     monkeypatch.setattr(settings, "openai_model", "test-model")
     monkeypatch.setattr(settings, "google_maps_api_key", "")
+    monkeypatch.setattr(settings, "otel_exporter_otlp_traces_endpoint", "")
+    monkeypatch.setattr(settings, "trace_directory", "")
+    monkeypatch.setattr(settings, "trace_model_prices", {})
 
 
 @pytest.fixture(autouse=True)

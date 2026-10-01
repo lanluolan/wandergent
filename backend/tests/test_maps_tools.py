@@ -27,6 +27,7 @@ PLACES_PAYLOAD = {
             "rating": 4.1,
             "userRatingCount": 5200,
             "priceLevel": "PRICE_LEVEL_MODERATE",
+            "types": ["restaurant", "food"],
         },
         {
             "displayName": {"text": "Yaekatsu", "languageCode": "en"},
@@ -64,6 +65,8 @@ async def test_finds_real_venues_with_the_detail_a_plan_needs() -> None:
     assert first.address.startswith("2-3-9")
     assert first.rating == 4.1
     assert first.rating_count == 5200
+    assert first.types == ["restaurant", "food"]
+    assert result.places[1].types == []
     assert (first.latitude, first.longitude) == (34.6524, 135.5063)
 
 
@@ -80,6 +83,7 @@ async def test_the_query_and_area_are_sent_as_one_text_query() -> None:
     assert b"ramen in Boston" in seen[0].content
     # The key travels in a header, never in the URL, so it cannot leak into a log line.
     assert seen[0].headers["X-Goog-Api-Key"] == "test-key"
+    assert "places.types" in seen[0].headers["X-Goog-FieldMask"]
     assert "test-key" not in str(seen[0].url)
 
 

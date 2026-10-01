@@ -10,6 +10,88 @@ from dataclasses import dataclass
 
 from app.agent.schemas import DayPlan, Itinerary
 
+_REMOVAL = re.compile(
+    r"(?:^|[.!?\n])\s*(?:please\s+)?(?:remove|delete|drop)\s+"
+    r"(?P<venue>[^.!?\n]{2,160}?)(?:\s+(?:from|on)\s+day\s+(?P<day>\d+))?"
+    r"\s*(?=$|[.!?\n])",
+    re.I,
+)
+
+
+@dataclass(frozen=True)
+class VenueRemoval:
+    """An explicit removal in this request, not a guessed persistent preference."""
+
+    venue: str
+    day_index: int | None = None
+
+
+@dataclass(frozen=True)
+class MealRequirement:
+    """Literal requested specialty in an explicit day/meal edit; not menu verification."""
+
+    day_index: int
+    meal: str
+    specialty: str
+
+
+def resolve_meal_requirements(request: str) -> list[MealRequirement]:
+    pattern = re.compile(
+        r"(?:^|[.!?\n])\s*(?:please\s+)?change\s+day\s+(?P<day>\d+)\s+"
+        r"(?P<meal>breakfast|brunch|lunch|dinner)\s+to\s+(?:an?\s+)?"
+        r"(?P<specialty>[a-z0-9][a-z0-9' -]{0,59}?)\s+(?:place|restaurant)\b",
+        re.I,
+    )
+    return [
+        MealRequirement(int(match["day"]) - 1, match["meal"].lower(), match["specialty"].strip())
+        for match in pattern.finditer(request)
+        if match["specialty"].strip().lower()
+        not in {"different", "another", "new", "nearby", "local", "cheaper", "less expensive"}
+    ]
+
+
+def resolve_removals(request: str) -> list[VenueRemoval]:
+    """Recognize standalone 'Remove X [from day N]' clauses conservatively."""
+    return [
+        VenueRemoval(
+            venue=match["venue"].strip().strip("\"'"),
+            day_index=int(match["day"]) - 1 if match["day"] else None,
+        )
+        for match in _REMOVAL.finditer(request)
+    ]
+
+
+def contains_venue(text: str, venue: str) -> bool:
+    """Case/whitespace insensitive literal names with Latin word boundaries."""
+    needle = " ".join(venue.casefold().split())
+    haystack = " ".join(text.casefold().split())
+    if not needle:
+        return False
+    start = r"(?<![a-z0-9_])" if needle[0].isascii() and needle[0].isalnum() else ""
+    end = r"(?![a-z0-9_])" if needle[-1].isascii() and needle[-1].isalnum() else ""
+    return bool(re.search(start + re.escape(needle) + end, haystack))
+
+
+def prune_removed_recommendations(
+    plan: Itinerary, removals: list[VenueRemoval], *, locked_days: frozenset[int] = frozenset()
+) -> Itinerary:
+    """Drop complete excluded recommendation items, never rename or hide a real visit."""
+    if not removals:
+        return plan
+    changed = plan.model_copy(deep=True)
+    for day_index, day in enumerate(changed.days):
+        if day_index in locked_days:
+            continue
+        names = [r.venue for r in removals if r.day_index is None or r.day_index == day_index]
+        for activity in day.activities:
+            activity.highlights = [
+                item
+                for item in activity.highlights
+                if not any(contains_venue(item, name) for name in names)
+            ]
+    return changed
+
+
 _DAY = re.compile(r"\bday\s+(\d+)\b", re.I)
 _LOCKED_DAY = re.compile(
     r"\b(?:leave|keep)\s+day\s+(\d+)\s+(?:completely\s+)?(?:unchanged|exactly\s+as\s+it\s+is)",

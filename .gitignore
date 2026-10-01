@@ -25,6 +25,8 @@ pytest-*/
 .ruff_cache/
 .mypy_cache/
 .eval/
+.traces/
+.kotlin/
 
 # ---- IDE / OS ----
 .idea/

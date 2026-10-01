@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from app.agent import opening_hours
 from app.agent.constraints import TripConstraints
+from app.agent.revision import MealRequirement, VenueRemoval, contains_venue
 from app.agent.schemas import Activity, DayPlan, Itinerary
 
 # A plan that moves between two places with less than this and no transport activity
@@ -301,6 +302,8 @@ def validate_itinerary(
     known_prices: dict[str, str] | None = None,
     *,
     constraints: TripConstraints | None = None,
+    removals: list[VenueRemoval] | None = None,
+    meals: list[MealRequirement] | None = None,
 ) -> ValidationReport:
     """Check an itinerary against the hard constraints. Pure and deterministic.
 
@@ -317,7 +320,87 @@ def validate_itinerary(
     )
     violations.extend(_check_budget(itinerary, ceiling))
     violations.extend(_check_days(itinerary))
-    violations.extend(_check_accommodation(itinerary))
+    violations.extend(_check_accommodation(itinerary, constraints))
+    for requirement in meals or []:
+        if not 0 <= requirement.day_index < len(itinerary.days):
+            violations.append(
+                Violation(
+                    code="constraint_mismatch",
+                    message="The requested meal day is outside the itinerary.",
+                )
+            )
+            continue
+        day = itinerary.days[requirement.day_index]
+        bands = {
+            "breakfast": (360, 720),
+            "brunch": (360, 720),
+            "lunch": (660, 960),
+            "dinner": (1020, 1440),
+        }
+        pattern = (
+            r"(?<![a-z0-9])"
+            + r"[-'\s]*".join(
+                re.escape(word) for word in re.split(r"[-'\s]+", requirement.specialty.lower())
+            )
+            + r"(?![a-z0-9])"
+        )
+
+        def matches(activity, meal=requirement.meal, bands=bands, pattern=pattern):
+            if activity.category != "food":
+                return False
+            declared = re.search(r"\b(breakfast|brunch|lunch|dinner)\b", activity.title, re.I)
+            if declared:
+                correct_meal = declared[1].lower() == meal
+            else:
+                left, right = bands[meal]
+                correct_meal = left <= _minutes(activity.start_time) < right
+            text = " ".join([activity.title, activity.location or "", *activity.highlights])
+            return correct_meal and bool(re.search(pattern, text.lower()))
+
+        if not any(matches(activity) for activity in day.activities):
+            violations.append(
+                Violation(
+                    code="constraint_mismatch",
+                    day=day.date,
+                    message=f"Day {requirement.day_index + 1} {requirement.meal} must visibly "
+                    f"satisfy the requested {requirement.specialty!r} specialty in its title, "
+                    "venue or recommendations. Notes or another day's meal do not satisfy this. "
+                    "Choose a suitable venue without rewriting locked days or inventing menu "
+                    "verification; preserve this requirement during time/route repair.",
+                )
+            )
+    for removal in removals or []:
+        if removal.day_index is not None and not 0 <= removal.day_index < len(itinerary.days):
+            violations.append(
+                Violation(
+                    code="constraint_mismatch",
+                    message=(
+                        f"Removal targets day {removal.day_index + 1}, "
+                        "which is outside the itinerary."
+                    ),
+                )
+            )
+            continue
+        for day_index, day in enumerate(itinerary.days):
+            if removal.day_index is not None and day_index != removal.day_index:
+                continue
+            if any(
+                contains_venue(text, removal.venue)
+                for activity in day.activities
+                for text in [activity.title, activity.location or "", *activity.highlights]
+            ):
+                violations.append(
+                    Violation(
+                        code="constraint_mismatch",
+                        day=day.date,
+                        message=(
+                            f"On day {day_index + 1} ({day.date}), the request removed "
+                            f"{removal.venue!r}, but it remains scheduled or recommended. "
+                            "Remove its visit and every remaining reference from activity "
+                            "titles, locations and highlights on this day; preserve locked days."
+                        ),
+                    )
+                )
     for day in itinerary.days:
         violations.extend(_check_day(day))
         violations.extend(_check_opening_hours(day, known_hours or {}))
@@ -421,21 +504,34 @@ _Fact = TypeVar("_Fact")
 def _match_known(activity: Activity, known: dict[str, _Fact]) -> _Fact | None:
     """Whatever the run looked up about the venue this activity refers to, if anything.
 
-    Containment in both directions, because the model rarely writes the venue name exactly
-    as Google returned it: "Lunch at Lou Malnati's" against "Lou Malnati's Pizzeria".
-    Requires a reasonably long name -- a three-letter match attaches the wrong venue's
-    hours, and a wrong closure is worse than no check.
+    Prefer an exact location over incidental names in the title. Match fields separately:
+    concatenating title and location broke reverse matches when both repeated the name.
+    A leading "The" is optional; arbitrary shortened names are not venue identities.
+    Latin name boundaries prevent "Alinea" from matching "SuperAlinea". Conflicting
+    equal-length candidates remain unknown rather than depending on dictionary order.
     """
-    haystack = f"{activity.title} {activity.location or ''}".lower()
-    best: _Fact | None = None
-    longest = 0
+
+    def normalize(value: str) -> str:
+        return " ".join(value.casefold().split()).removeprefix("the ")
+
+    location = normalize(activity.location or "")
+    title = normalize(activity.title)
+    candidates = []
     for name, fact in known.items():
-        needle = name.lower().strip()
+        needle = normalize(name)
         if len(needle) < MIN_VENUE_MATCH_CHARS:
             continue
-        if (needle in haystack or haystack in needle) and len(needle) > longest:
-            best, longest = fact, len(needle)
-    return best
+        boundary_start = r"(?<![a-z0-9_])" if needle[0].isascii() and needle[0].isalnum() else ""
+        boundary_end = r"(?![a-z0-9_])" if needle[-1].isascii() and needle[-1].isalnum() else ""
+        pattern = boundary_start + re.escape(needle) + boundary_end
+        rank = 3 if location == needle else 2 if title == needle else 1
+        if rank > 1 or any(re.search(pattern, field) for field in (location, title)):
+            candidates.append(((rank, len(needle)), fact))
+    if not candidates:
+        return None
+    best_rank = max(rank for rank, _ in candidates)
+    best = [fact for rank, fact in candidates if rank == best_rank]
+    return best[0] if len(best) == 1 else None
 
 
 def _check_opening_hours(day: DayPlan, known_hours: dict[str, list[str]]) -> list[Violation]:
@@ -509,12 +605,14 @@ def _check_price_levels(day: DayPlan, known_prices: dict[str, str]) -> list[Viol
     return violations
 
 
-def _check_accommodation(itinerary: Itinerary) -> list[Violation]:
+def _check_accommodation(
+    itinerary: Itinerary, constraints: TripConstraints | None = None
+) -> list[Violation]:
     """A trip with nights in it has to say where those nights are spent.
 
-    Two ways to satisfy it: an accommodation activity, or a note saying lodging is already
-    handled. Silence is not one. A live run produced a three-day plan with no hotel whose
-    breakfast entry read "the hotel or a nearby cafe" -- lodging the plan never chose.
+    Live planning always supplies request-owned constraints: only user confirmation may
+    exempt it. The standalone legacy checker still accepts lodging notes when no request
+    context is available, for saved plans predating the constraint snapshot.
     """
     if itinerary.end_date <= itinerary.start_date:
         return []
@@ -524,7 +622,11 @@ def _check_accommodation(itinerary: Itinerary) -> list[Violation]:
         for activity in day.activities
     ):
         return []
-    if any(word in note.lower() for note in itinerary.notes for word in LODGING_WORDS):
+    if constraints and constraints.lodging_arranged is True:
+        return []
+    if constraints is None and any(
+        word in note.lower() for note in itinerary.notes for word in LODGING_WORDS
+    ):
         return []
 
     nights = (itinerary.end_date - itinerary.start_date).days
@@ -533,8 +635,9 @@ def _check_accommodation(itinerary: Itinerary) -> list[Violation]:
             code="missing_accommodation",
             message=(
                 f"The trip covers {nights} night(s) but no accommodation is planned. "
-                "Add an accommodation activity with a named hotel or area, or state in "
-                "notes that lodging is already arranged."
+                "Add an accommodation activity with a named hotel or area and its cost. "
+                "Only the traveller's request-owned lodging confirmation exempts this; "
+                "do not invent a note claiming lodging is arranged."
             ),
         )
     ]

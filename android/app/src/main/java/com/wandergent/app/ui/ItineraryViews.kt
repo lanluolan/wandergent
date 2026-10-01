@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.wandergent.app.data.Activity
+import com.wandergent.app.data.ActivityEvidence
 import com.wandergent.app.data.DayMapClient
 import com.wandergent.app.data.DayPlan
 import com.wandergent.app.data.Itinerary
@@ -89,7 +90,8 @@ internal fun LazyListScope.planItems(
         item(key = "$key-save") { SaveButton(saved, onSave) }
         item(key = "$key-feedback") { FeedbackButton(response) }
         itemsIndexed(itinerary.days, key = { index, _ -> "$key-day-$index" }) { index, day ->
-            DayTimelineCard(day, itinerary.currency, dayNumber = index + 1)
+            DayTimelineCard(day, itinerary.currency, dayNumber = index + 1,
+                evidence = response.activityEvidence.filter { it.dayIndex == index })
         }
         if (itinerary.notes.isNotEmpty()) {
             item(key = "$key-notes") { NotesCard(itinerary.notes) }
@@ -292,7 +294,10 @@ internal fun SummaryCard(itinerary: Itinerary) {
 }
 
 @Composable
-internal fun DayTimelineCard(day: DayPlan, currency: String, dayNumber: Int) {
+internal fun DayTimelineCard(
+    day: DayPlan, currency: String, dayNumber: Int,
+    evidence: List<ActivityEvidence> = emptyList(),
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
@@ -341,6 +346,7 @@ internal fun DayTimelineCard(day: DayPlan, currency: String, dayNumber: Int) {
                     activity,
                     currency = currency,
                     isLast = index == day.activities.lastIndex,
+                    evidence = evidence.firstOrNull { it.activityIndex == index },
                 )
             }
         }
@@ -415,7 +421,9 @@ private fun DayMap(day: DayPlan, dayNumber: Int) {
 
 /** One activity against a vertical rail, so a day reads as a sequence rather than a list. */
 @Composable
-private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
+private fun TimelineRow(
+    activity: Activity, currency: String, isLast: Boolean, evidence: ActivityEvidence? = null,
+) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -484,6 +492,20 @@ private fun TimelineRow(activity: Activity, currency: String, isLast: Boolean) {
             activity.location?.let {
                 Text(
                     it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            evidence?.let {
+                val checked = if (it.venueVerified) {
+                    "Place checked with ${it.source ?: "map data"}" +
+                        (it.collectedAt?.take(10)?.let { date -> " on $date" } ?: "")
+                } else {
+                    "Place not independently checked"
+                }
+                Text(
+                    "$checked · Recheck opening hours and prices before departure",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

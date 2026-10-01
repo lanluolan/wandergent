@@ -142,6 +142,8 @@ class ToolCallRecord(BaseModel):
     #: Deterministic evidence match against the shipped itinerary. False means no use
     #: could be proved, not that the model definitely ignored the result.
     contributed: bool = False
+    collected_at: str | None = None
+    fact_payload: dict = Field(default_factory=dict, exclude=True)
     #: Candidate fact identifiers used only to derive `contributed`; never serialized.
     evidence: list[str] = Field(default_factory=list, exclude=True)
     #: The detailed reason, for the log line at the point of failure. `exclude` keeps it
@@ -217,12 +219,14 @@ class PlanResult(BaseModel):
     """Outcome of one planning run."""
 
     run_id: str = Field(default_factory=lambda: uuid4().hex)
+    trace_id: str | None = None
     feedback_available: bool = False
 
     constraints: TripConstraints = TripConstraints()
     itinerary: Itinerary | None = None
     tool_calls: list[ToolCallRecord] = []
     tool_usage: ToolUsage = ToolUsage()
+    activity_evidence: list["ActivityEvidence"] = []
 
     #: How the run went, as codes the client renders. Deliberately disjoint from
     #: `validation`: this list says what the agent could not finish, that one says what
@@ -237,3 +241,25 @@ class PlanResult(BaseModel):
 
     #: What this run cost. Zero if the endpoint does not report usage.
     usage: Usage = Usage()
+
+
+class ActivityEvidence(BaseModel):
+    """Fact coverage, not a claim that the complete activity is verified."""
+
+    day_index: int
+    activity_index: int
+    source: str | None = None
+    collected_at: str | None = None
+    venue_verified: bool = False
+    hours_available: bool = False
+    price_level_available: bool = False
+    price_confidence: Literal["estimate"] = "estimate"
+    recheck_before_departure: bool = True
+    route_source: str | None = None
+    route_collected_at: str | None = None
+    route_departure: str | None = None
+    route_mode: str | None = None
+    route_seconds: int | None = None
+
+
+PlanResult.model_rebuild()

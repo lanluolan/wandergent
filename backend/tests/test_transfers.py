@@ -82,6 +82,7 @@ async def test_a_genuinely_long_hop_stays_flagged_with_the_real_number(monkeypat
     assert violation.code == "insufficient_transfer"
     # An unspecified leg cannot silently assume driving.
     assert violation.needed_minutes == 60 + TRANSFER_MARGIN_MINUTES
+    assert violation.travel_mode == "WALK"
     assert "60 minutes" in violation.message
     assert "10" in violation.message
 

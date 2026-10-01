@@ -15,6 +15,38 @@ import kotlin.test.assertTrue
  * backend model changes, by constructing an `Itinerary` and dumping a `PlanResult`.
  */
 class PlanDtoTest {
+    @Test
+    fun `user confirmed lodging survives revision request round trip`() {
+        val response = json.decodeFromString<PlanResponse>(
+            """{"constraints":{"lodging_arranged":true}}"""
+        )
+        assertEquals(true, response.constraints?.lodgingArranged)
+        val request = PlanRequest(message = "Change lunch", previousConstraints = response.constraints)
+        val restored = json.decodeFromString<PlanRequest>(json.encodeToString(request))
+        assertEquals(true, restored.previousConstraints?.lodgingArranged)
+        assertNull(json.decodeFromString<TripConstraints>("{}").lodgingArranged)
+        assertEquals(false, json.decodeFromString<TripConstraints>(
+            """{"lodging_arranged":false}"""
+        ).lodgingArranged)
+    }
+
+    @Test
+    fun `fact coverage preserves timestamps and estimated prices`() {
+        val response = json.decodeFromString<PlanResponse>("""
+            {"trace_id":"0123456789abcdef0123456789abcdef", "activity_evidence":[
+              {"day_index":0,"activity_index":1,"source":"Google Places",
+               "collected_at":"2026-09-29T10:00:00+00:00","venue_verified":true,
+               "hours_available":true,"price_confidence":"estimate",
+               "recheck_before_departure":true}
+            ]}
+        """)
+        val evidence = response.activityEvidence.single()
+        assertEquals("estimate", evidence.priceConfidence)
+        assertEquals("2026-09-29T10:00:00+00:00", evidence.collectedAt)
+        assertTrue(evidence.venueVerified)
+        assertTrue(evidence.recheckBeforeDeparture)
+        assertEquals(response, json.decodeFromString<PlanResponse>(json.encodeToString(response)))
+    }
 
     private val json = ApiJson.json
 

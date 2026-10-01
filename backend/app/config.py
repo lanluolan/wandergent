@@ -1,5 +1,8 @@
 """App config. All secrets / external service URLs come from env vars or .env."""
 
+from math import isfinite
+from urllib.parse import urlsplit
+
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +23,39 @@ class Settings(BaseSettings):
 
     app_name: str = "Wandergent"
     debug: bool = False
+
+    # Optional OTLP JSON collector endpoint, including /v1/traces. No content export.
+    otel_exporter_otlp_traces_endpoint: str = ""
+    trace_directory: str = ""
+    # Per-model [uncached input, cached input, output] USD per million tokens.
+    trace_model_prices: dict[str, list[float]] = {}
+
+    @field_validator("otel_exporter_otlp_traces_endpoint")
+    @classmethod
+    def _valid_trace_endpoint(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("OTLP endpoint must be an HTTP URL without credentials or query")
+        return value
+
+    @field_validator("trace_model_prices")
+    @classmethod
+    def _valid_trace_prices(cls, value: dict[str, list[float]]) -> dict[str, list[float]]:
+        if any(
+            len(prices) != 3 or any(p < 0 or not isfinite(p) for p in prices)
+            for prices in value.values()
+        ):
+            raise ValueError("TRACE_MODEL_PRICES needs three non-negative rates per model")
+        return value
 
     # LLM, on an OpenAI-compatible endpoint. Defaults name what we actually run against,
     # never the SDK's factory values. The key has no default -- a secret is supplied or

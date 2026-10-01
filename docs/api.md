@@ -12,6 +12,22 @@
 the client retries against it if the stream produces nothing, so a proxy that breaks SSE
 degrades instead of failing. Both run the same orchestrator; only delivery differs.
 
+### Additive observability metadata (2026-09-30)
+
+Both response paths now include nullable `trace_id` and `activity_evidence` (default `[]`).
+Evidence entries use zero-based `day_index` and `activity_index` into the final itinerary.
+They include nullable `source`/`collected_at`, boolean `venue_verified`, `hours_available`
+and `price_level_available`, `price_confidence="estimate"` and
+`recheck_before_departure=true`. Nullable route fields are `route_source`,
+`route_collected_at`, `route_departure`, `route_mode` and integer `route_seconds`.
+Tool call records also add nullable `collected_at`; internal `fact_payload` is excluded.
+
+These are coverage metadata, not whole-activity validation. Original timestamps survive
+cache reuse, ambiguous locations remain unverified, and prices are always estimates.
+Older responses/saved plans decode with empty evidence. The historical schema dumps
+below predate this additive extension; see the current OpenAPI endpoint for full schemas
+and [observability documentation](../observability/README.md) for semantics and privacy.
+
 ---
 
 ## Base URL
@@ -85,7 +101,7 @@ timeout — the 10 s default cuts it off mid-flight.
 | `currency` | string | optional, ISO 4217 (`"USD"`) or empty; anything else is a 422. The plan is **estimated** in it, never converted into it — a conversion would need an FX source, and a stale rate makes an estimate look precise. Empty lets the model use the destination's local currency, which is what callers got before this existed. |
 | `previous` | itinerary or null | The plan to revise. Omit for a new trip. A message beginning with `New trip` starts fresh even if an older client sends one. |
 | `previous_constraints` | `TripConstraints` or null | The request-owned constraint snapshot returned with `previous`. This is the budget/date/party/mode authority across revisions; the itinerary is not. |
-| `constraints` | `TripConstraints` or null | Optional structured confirmation from a trusted UI: `budget`, `currency`, `start_date`, `end_date`, `days`, `travelers`, `allowed_modes`. Explicit values override the narrow parser; unknown fields are a 422. |
+| `constraints` | `TripConstraints` or null | Optional structured confirmation from a trusted UI: `budget`, `currency`, `start_date`, `end_date`, `days`, `travelers`, `allowed_modes`, `lodging_arranged`. Explicit values override the narrow parser; unknown fields are a 422. |
 | ~~`user_id`~~ | — | **Removed.** Identity comes from the `Authorization: Bearer <token>` header, never from the body: a body field is a claim the client makes, and anyone could claim anyone else's id. A request with no token is anonymous — nothing is recalled and nothing is stored. |
 
 ### Response `200`
@@ -232,6 +248,7 @@ timeout — the 10 s default cuts it off mid-flight.
 
 - **`itinerary` can be `null` on a `200`** — the model could not produce a valid plan. A `no_itinerary` warning says so, `raw_reply` carries what it said. Render as a failure state; do not crash on the null.
 - **`constraints` is request-owned state.** Send it back as `previous_constraints` with a revision. The validator checks its budget, currency, dates, day count, party size and allowed travel modes after every generation and repair. The model cannot loosen it by changing fields in `itinerary`.
+  - Only request-owned `lodging_arranged: true` exempts overnight plans from choosing accommodation. A model-generated note claiming a booking cannot establish it. The narrow parser accepts explicit confirmations such as `lodging is already arranged`; revisions inherit that confirmation, while a new trip resets it. `null`/`false` require lodging for overnight plans.
   - The prose parser only confirms narrow, explicit forms such as `budget 900 USD`, `3 days`, `2 travelers`, ISO dates and `no driving`. A trusted client can send other confirmed values in `constraints`. Contradictory `days` and date ranges are a `422`, not competing instructions for the model.
 - **`run_id`** is an opaque 32-character id for feedback. Show feedback controls only when `feedback_available=true`; anonymous runs and storage failures return false.
 - **Costs are computed server-side** from the activities. Always present in responses, ignored if sent inbound.

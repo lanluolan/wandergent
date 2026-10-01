@@ -46,6 +46,8 @@ data class PlanRequest(
 @Serializable
 data class PlanResponse(
     @SerialName("run_id") val runId: String? = null,
+    @SerialName("trace_id") val traceId: String? = null,
+    @SerialName("activity_evidence") val activityEvidence: List<ActivityEvidence> = emptyList(),
     @SerialName("feedback_available") val feedbackAvailable: Boolean = false,
     val constraints: TripConstraints? = null,
     val itinerary: Itinerary? = null,
@@ -179,6 +181,25 @@ data class ToolCallRecord(
     @SerialName("duration_ms") val durationMs: Int = 0,
     val attempts: Int = 1,
     val contributed: Boolean = false,
+    @SerialName("collected_at") val collectedAt: String? = null,
+)
+
+@Serializable
+data class ActivityEvidence(
+    @SerialName("day_index") val dayIndex: Int,
+    @SerialName("activity_index") val activityIndex: Int,
+    val source: String? = null,
+    @SerialName("collected_at") val collectedAt: String? = null,
+    @SerialName("venue_verified") val venueVerified: Boolean = false,
+    @SerialName("hours_available") val hoursAvailable: Boolean = false,
+    @SerialName("price_level_available") val priceLevelAvailable: Boolean = false,
+    @SerialName("price_confidence") val priceConfidence: String = "estimate",
+    @SerialName("recheck_before_departure") val recheckBeforeDeparture: Boolean = true,
+    @SerialName("route_source") val routeSource: String? = null,
+    @SerialName("route_collected_at") val routeCollectedAt: String? = null,
+    @SerialName("route_departure") val routeDeparture: String? = null,
+    @SerialName("route_mode") val routeMode: String? = null,
+    @SerialName("route_seconds") val routeSeconds: Int? = null,
 )
 
 @Serializable
@@ -211,4 +232,5 @@ data class TripConstraints(
     val days: Int? = null,
     val travelers: Int? = null,
     @SerialName("allowed_modes") val allowedModes: List<String>? = null,
+    @SerialName("lodging_arranged") val lodgingArranged: Boolean? = null,
 )
