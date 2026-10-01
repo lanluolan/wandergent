@@ -2176,3 +2176,404 @@ nothing read them, and Phase 4 will add what it actually needs.
   acceptance claim: implementation and offline gates are complete, but lower calls/latency with no
   quality regression is **not demonstrated**. The red smoke was retained; no full run or best-of rerun
   followed it.
+
+## Content-free execution traces and conservative fact coverage (2026-09-30)
+
+- Selected Phoenix, with an optional official OpenTelemetry Collector bridge. The backend
+  uses existing `httpx` to emit bounded OTLP/HTTP JSON; Phoenix accepts protobuf. This is
+  wire-format instrumentation, not the OpenTelemetry SDK, and no Python dependency was added.
+- Graph nodes, model turns, tools, route confirmation, validation and repair share a trace.
+  Root attributes bind run ID, outcome, usage, cache hits and repair count to implementation,
+  prompt-template, schema and tool-definition hashes. Eval diagnostics retain the trace ID.
+  Operator-supplied rates estimate model cost; missing rates/usage stay unknown, not zero.
+- Export and local storage are opt-in. Export has a two-second timeout and never replaces
+  the planning outcome with an exporter failure. Spans omit prompts, arguments, responses,
+  user identity, addresses, credentials and exception messages. Tool names are allowlisted.
+  Local storage rejects paths outside the workspace and stops after 100 artifacts.
+- Structural replay shows parent/child timing, failure groups and version comparisons;
+  it does not replay private prompts or spend tokens. Whole-activity truth is not implied
+  by matching an external fact. Exact unambiguous venue identities retain provider and
+  original observation time; final-day routes retain measured departure/mode/duration.
+  Prices remain estimates, and Android reminds travellers to recheck hours and prices.
+- Offline verification: 524 backend tests passed, 1 opt-in MCP test deselected; Ruff and
+  formatting pass. Android: 96 JVM tests and debug APK build pass. Compose passes static
+  validation. No paid/live model eval was run; the earlier red release gates remain red.
+- Platform acceptance remains incomplete: Docker Engine is not running and downloading /
+  starting the stack needs explicit permission for external Docker storage. Neither mock
+  OTLP acceptance nor Compose validation is counted as Phoenix receipt. Setup and a
+  synthetic no-model smoke script are in `observability/README.md`.
+
+## Repair the canonical candidate, not stale assistant JSON (2026-10-01)
+
+- A scoped revision restores locked fields after parsing, so the last assistant JSON
+  need not equal the candidate that actually failed validation. Constraint repair now
+  explicitly supplies the canonical current candidate inside user-message data, together
+  with request-owned hard constraints and the bounded original venue brief. It does not
+  add consecutive assistant turns or expose the full content of server-locked days.
+- Each repair receives the latest candidate, original observation timestamp and opening
+  windows. Measured gaps and required minutes remain validator-owned; a renamed venue or
+  transport label must not disguise a violation. The validator, limits and route checks
+  are unchanged. This is a prompt/context correction, not a deterministic itinerary rewrite.
+- Four new fixtures cover request-owned budgets/modes, restored revision scope, multiple
+  repair candidates and an afternoon-only diner scheduled for breakfast. A scripted
+  corrected answer is fully revalidated; it is not evidence that a live model will succeed.
+- Offline replay additionally reports per-model tokens/timing, estimated cost, outcomes
+  and prompt/schema/tool hashes. Backend regression: 528 passed, 1 opt-in MCP deselected;
+  Ruff check and formatting pass. Android was unchanged in this follow-up, so its latest
+  evidence remains the earlier 96 JVM tests and debug build, not a fresh run.
+- First-stage acceptance is still open: live hours/transfer targets, the tool-efficiency
+  quality/latency gate and the final full release gate need new evidence. Phoenix runtime
+  receipt remains pending with Docker Engine stopped. No paid eval, Docker state change,
+  commit or push was performed in this follow-up.
+
+## Match venue facts without cross-field accidents (2026-10-01)
+
+- The validator concatenated activity title and location before matching. A repeated name
+  could therefore miss an otherwise identical Google name with a leading "The". It could
+  also apply a museum's hours when the title merely mentioned that museum and the actual
+  location exactly identified a different known diner.
+- Fact matching now normalizes whitespace/case and an optional leading article, checks
+  title/location separately, prioritizes exact location identity, and requires Latin name
+  boundaries. Equal-ranked ambiguous matches produce no invented hours/price conclusion.
+  The same matching function governs opening hours and paid-price-band checks. Budget,
+  transfer checks, repair limits and existing tests are unchanged.
+- Four additional fixtures cover these failures and order-independent ambiguity. Targeted
+  hours/price/validation/repair checks: 65 passed. This does not fix every venue-identity
+  problem: the existing name-keyed fact dictionaries still cannot distinguish all branches
+  of a chain. No claim of full factual identity verification or live model success is made.
+- Paid eval and Phoenix persistence remain pending explicit authorization. The latest
+  Docker read-only probe was denied access to its engine pipe; no escalation or Docker
+  state change was attempted. Full backend regression: 532 passed, 1 opt-in MCP test
+  deselected; Ruff check and formatting pass. Android was not changed or rebuilt here.
+
+## Authorized targeted evals and Phoenix persistence (2026-10-01)
+
+- With explicit user permission, downloaded and started Phoenix 20.1.0 and Collector
+  0.145.0. Actual startup rejected the retry policy because its 10-second elapsed bound
+  was smaller than the default maximum interval. Setting initial/max intervals to 1/5
+  seconds fixed startup; the HTTP receiver and protobuf export then worked.
+- Phoenix's read-only API confirmed the four-span synthetic failure trace
+  `8fccb3e47177447f824eea301b4aa4af`, the 85-span real planning trace
+  `bf55cb154f3c41859ab374503daa833d`, the 60-span `specifics` trace
+  `cee72990aad04d0aa75ec477666ad6a0`, and the 47-span failed revision trace
+  `f280cf7e699f4499bfecf6c9d7c5fab3`. Tree links, typed model/tool/repair spans,
+  source/prompt/schema/tool hashes, a tool `bad_request` and an infeasible root were
+  observable. Specifics' local/Phoenix span counts and estimated model cost matched.
+  `scripts.verify_phoenix` makes these persistence checks reproducible without models.
+- Fixed reference date 2026-09-28, gpt-5.6-luna, Maps enabled. Historical operator rates
+  0.20/0.02/1.20 USD per million input/cached/output tokens were used for estimates,
+  not asserted to be current provider prices; Maps and long-context charges are excluded.
+
+| Target | Checks | Seconds | LLM calls | Tokens | Estimated model USD |
+|---|---:|---:|---:|---:|---:|
+| beyond-forecast-horizon | 4/4 | 144.3 | 7 | 141,455 | 0.03783488 |
+| specifics | 6/6 | 96.9 | 6 | 75,492 | 0.02155274 |
+| revision-sequence | 26/29 | 204.3 | 21 | 197,184 | 0.05013672 |
+
+- Total: 34 model calls, 414,131 tokens, 445.4 seconds and $0.10952434 estimated model
+  cost. The first network-sandbox attempt failed with APIConnectionError before any
+  model usage; its report was retained separately, then the authorized network-capable
+  runner was used. No random best-of reruns or paid smoke/full runs followed.
+- Reports are workspace-local `.eval/phase1-hours-network-2026-10-01.json`,
+  `.eval/phase1-transfers-2026-10-01.json`, `.eval/phase1-revision-2026-10-01.json`.
+  The failed sequence has opening-hours/transfer violations in step 3, overlap/transfer
+  violations in step 4, and opening-hours/transfers in the Boston new-trip step. Locked
+  day and trip-frame checks passed, but the correctness gate is still red.
+- Failed traces show only one repair before termination despite remaining hard violations;
+  under this implementation that indicates the repaired itinerary did not pass parsing.
+  Content-free traces cannot tell whether the cause was a partial object or another
+  schema error. A follow-up prompt now explicitly requests the complete object, not a
+  patch; graph.repair records `invalid_repair_output` separately, without raw replies.
+  The regression proves invalid output remains flagged and bounded. This last prompt /
+  telemetry change has offline verification only, **not** a new live acceptance claim.
+- Live traces identify implementation hash
+  `839ccf8450c53e5808069fa19aebde3f44e337e993cbb0cbceaf9e8ea3182810` before that follow-up.
+  Phoenix/Collector are left running on localhost ports 6006/4318; no container deletion,
+  commit, push or system-configuration changes were made.
+- Final follow-up regression: 534 backend tests passed, 1 opt-in MCP deselected, Ruff
+  check and formatting pass. Android code was not changed during this authorization turn.
+
+## One shared format correction inside constraint repair (2026-10-01)
+
+- Invalid repair JSON used to set repairs_left=0 immediately. The constraint-repair loop
+  now has one separate, run-wide format allowance: resend parser feedback and the current
+  schema once, then restore revision scope and fully revalidate any recovered itinerary.
+  The three constraint-repair attempts remain unchanged; at most one extra model call is
+  added, not one extra call per repair. Repeated invalid output retains the last valid
+  candidate and its unresolved findings. Model/network exceptions are not format retries.
+- Each parse attempt has a `repair.output` span, with accepted/retry flags and the stable
+  `invalid_repair_output` code. A recovered graph.repair can succeed without hiding its
+  earlier failed output span. Parser messages are sent only to the model, not trace/log
+  output. Accounting includes both the original and any format-correction call.
+- Five new fixtures cover partial-object recovery, full revalidation of still-infeasible
+  repairs, run-wide budget exhaustion, request-owned budget protection, and failed/recovered
+  span retention. Earlier malformed-output tests retain their assertions with an explicit
+  second malformed response to exercise the new allowance. Full backend: 539 passed,
+  1 opt-in MCP deselected; Ruff and formatting pass. No Android changes in this turn.
+- Under the existing paid-target authorization, ran one changed-version revision-sequence:
+  **29/29**, 199.9 seconds, 20 calls, 208,842 tokens (100,673 cached), estimated model
+  cost $0.04374026 at the same historical operator rates; Maps excluded. Report:
+  `.eval/phase1-revision-format-recovery-2026-10-01.json`. The old 26/29 report is retained.
+  All six plan traces persisted in Phoenix with OK roots and complete parent links:
+  `ac96c44a9355490ca1b277a572def61f`, `84ea9fa03f914746851a14fc6625b49e`,
+  `4c43b1d318dc4bdea8d4ffbfa644db53`, `88fd24570ace4f8893754733c4e68060`,
+  `4c5bb65533cd4db5a5acd5ca1db22285`, `dcb8fe2df81243298af22f989709f926`.
+- That live run used zero extra format corrections. Its passing result validates the
+  changed-version target, not the retry branch in a real model run and not a causal A/B.
+  Compared with the earlier run, calls were 21->20 and latency 204.3->199.9 seconds,
+  but tokens rose 197,184->208,842; no tool-efficiency acceptance claim is made.
+  Live trace implementation hash is
+  `70b0dafafdc696966d44677fe00f1122b6a3b36e72d81ac74659828c1901acc3`.
+- No paid smoke/full run, dependency change, commit or push. Remaining first-stage gates
+  are cross-scenario smoke/full correctness and controlled efficiency evidence; ambiguous
+  same-name branch fact binding is also still a known limitation.
+
+## Authorized cross-scenario gate and efficiency verification (2026-10-01)
+
+- User explicitly expanded permission to paid smoke/full and efficiency comparison. Ran
+  the fixed five-case smoke once: 4/5 cases, 34/35 checks, 546.7s, 32 LLM calls, 409,080
+  tokens (151,287 cached), 81/81 research tools, zero cache hits and 7 degraded outcomes.
+  Historical-rate estimated model cost: $0.10634934, excluding Maps/long-context charges.
+  Retained `.eval/phase1-release-smoke-2026-10-01.json`; no full run followed the red gate.
+- Memory preference/content checks passed. Its plan still had Holiday Lodge -> Fixins
+  Soul Kitchen with zero gap and a 40-minute measured requirement. Phoenix persisted all
+  seven turns. Failed trace `b259d1ad7246453fa1da25148bf79775` has 84 spans, three valid
+  repair outputs and an infeasible/error root. The new format retry was not used: this
+  remaining failure is schedule repair, not format recovery. No stochastic rerun followed.
+- Added `scripts.compare_evals`: join shared cases, flag different/missing settings,
+  retain missing old tool counters as unknown and report quality regressions. Both old
+  and new comparisons match model/date/Maps/suite/rates, but are not controlled live A/B.
+  Against the earlier all-green five-case subset, calls fell 35->32, time rose 477.1->546.7s,
+  tokens rose 379,198->409,080 and quality fell 5/5->4/5. Against the immediate red smoke,
+  quality improved 3/5->4/5 and calls fell 37->32, but time/cost did not improve. Neither
+  comparison certifies no-quality-regression efficiency acceptance.
+- Added `scripts.benchmark_tools`, a no-network frozen-fixture paired control: two plans,
+  four independent tool reads each, fixed model replies/facts and 50ms artificial upstream
+  delay. Serial/no-shared-cache and current runtime arms have five repetitions with seeded
+  randomized order, initially empty caches and identical itinerary/validation hashes.
+  Median pair times: 498.9->78.2ms, fixture executions 8->4, scripted model calls 4->4.
+  This proves cache/concurrency mechanics for that workload, not live production quality,
+  model cost or universal end-to-end savings. Raw samples are retained at
+  `.eval/phase1-tool-benchmark-2026-10-01.json`.
+- Reproduction commands and the full comparison are in `observability/efficiency.md`.
+  Backend: 541 passed, 1 opt-in MCP deselected; Ruff/format pass. No production behavior,
+  dependencies or Android changes in this verification turn; no commit/push. Release and
+  live efficiency gates remain open. Next work should target the measured transfer failure
+  before returning to the target -> smoke -> full ladder.
+
+## Actionable measured-transfer repair (2026-10-01)
+
+- The retained failing smoke put TRANSIT on a food activity, not on an intervening
+  transport activity. That does not authorize transit: the validator correctly measured
+  the hop as walking. Repair prose gave the required gap but no concrete arrival bound,
+  and suggested adding a transport step without saying that a label cannot create time.
+- Confirmed failures now retain the measured mode. Repair context carries structured
+  local departure, earliest arrival, existing gap and required gap including the buffer.
+  It explicitly explains category=transport mode ownership and requires downstream
+  timeline/hours checks. Bounds are conditional on keeping departure/mode; changed routes
+  are still remeasured. No automatic schedule rewriting, extra retries or weaker validator.
+- Five new deterministic cases cover midnight rollover, unknown-measurement honesty,
+  actual mode ownership, latest-candidate bounds/fresh departure measurements and both
+  corrected/stubborn zero-gap outputs. Full backend: 546 passed, 1 opt-in MCP deselected;
+  Ruff/format and diff checks passed. Android and dependencies unchanged.
+- One authorized changed-version memory-recall target passed 4/4 in 110.0s, 11 LLM calls,
+  138,941 tokens (50,447 cached), 32/37 research tools executed, zero cache hits/failures.
+  Current local configuration is gpt-6-luna, unlike the earlier gpt-5.6-luna report.
+  The original target command inherited the old operator rates: its $0.03022774 field is
+  only an old-rate conversion, NOT a supported price estimate for the new model. Treat
+  actual cost as unknown; subsequent gates omit unsupported prices. No config was edited.
+- Both target traces persisted with complete parent links and OK roots in Phoenix:
+  `85f2e234d29241b39b66081e4f8fa667` (69 spans) and
+  `672ad07d2a37451fbb805476a324c7b3` (54 spans). The LA turn initially had six measured
+  transfer failures and one over-budget finding; one parsed constraint repair cleared
+  them on full revalidation. No extra format retry. This supports the live repair path,
+  but a model change prevents attributing improvement solely to this prompt change.
+- Raw target: `.eval/phase1-memory-transfer-fix-2026-10-01.json`; old red reports retained.
+  Trace implementation hash: `d68205fca7030e6f98d56ddf1afd7b41923f4511fbd3ca16e13e5d122c44f0ed`.
+  An authorized five-case smoke is now running with this same implementation and current
+  model. No commit or push.
+- The changed-version smoke passed 5/5 cases, 35/35 checks in 299.2s: 36 calls,
+  362,726 tokens (150,116 cached), 90/103 research tools executed, zero cache hits,
+  2 degraded outcomes and no retries. All seven plan traces were verified in Phoenix,
+  with the same implementation hash and OK roots. Full nine-case gate is now running.
+  Report: `.eval/phase1-transfer-fix-smoke-2026-10-01.json`; prices omitted/unknown.
+  Comparison correctly flags different model/rates. Calls increased 32->36 and tool
+  executions 81->90 versus the old red smoke; neither latency reduction nor recovered
+  quality establishes a causal or no-regression efficiency improvement.
+- Full completed with 8/9 cases, 73/75 checks. Chained revisions failed step 2's removal
+  check (a Grand Central Market text reference remained) and step 3's feasibility check
+  (Blue Daisy dinner 17:00-18:00 versus published Wednesday 08:00-15:00). There were no
+  final insufficient-transfer failures. Retained `.eval/phase1-transfer-fix-full-2026-10-01.json`;
+  no same-code rerun or check weakening. Full release acceptance is still not achieved.
+- Full totals: 84 calls, 888,500 tokens (402,686 cached), 191/209 research tools executed,
+  3 cache hits, 1 retry, 3 research-tool failures; model cost unknown. The recorded
+  5,595.4s includes two abnormal tool-wait periods (memory 3,780.3s and forecast horizon
+  1,334.1s). Weather 503 and route timeout/no-coverage outcomes remain visible. This run
+  cannot serve as a normal-latency or causal efficiency benchmark. No system setting was
+  changed to work around the delay. A non-blocking wait/stop choice received no answer;
+  the already-authorized full finished naturally.
+- All 16 full traces were structurally verified through Phoenix's read-only API. Step 3
+  `4f5bf2a35b684640b15bb7af13fd26e1` correctly has an infeasible/error root (73 spans).
+  Step 2 `c1f79c23462f43a3a9b5e289bb204fd4` has an OK root (24 spans) but fails product
+  intent, demonstrating the distinction between feasibility and edit compliance. The
+  impossible-budget case retained `understated_cost` (not `over_budget`) and an infeasible
+  result; its error root is expected. This corrects the earlier progress message's
+  over-budget wording. No dependencies, commit, push or container cleanup.
+
+## Server-checked removal intent and observed-hours fallback (2026-10-01)
+
+- Rechecked the two red chained-revision traces: step 2 passed the feasibility validator
+  and never entered repair; step 3 had one opening-hours violation at every validation,
+  although all three model repair outputs parsed and the transfer failures cleared.
+  Model feedback alone was insufficient. The retained content-free failure report cannot
+  locate the removal reference's exact day/field, so scope must not be guessed from it.
+- Added run-scoped `VenueRemoval` requirements for explicit standalone English
+  `Remove/Delete/Drop X [from/on day N]` clauses. Case/whitespace-insensitive literal
+  names use Latin boundaries. Positive references in activity title/location/highlights
+  produce a blocking `constraint_mismatch`; nonexistent days also block. Notes remain
+  commentary. This is not a general language parser or a persistent excluded-preference
+  store, and no new API constraint field or violation enum was added.
+- The server can prune complete excluded highlight items on the editable day, preserving
+  the original input, actual venue identities, timings, costs and locked days. It cannot
+  rename a real excluded visit to conceal it; a stubborn visit enters bounded repair and
+  remains flagged if unsuccessful. Global removals never override an explicit day lock.
+- Fixed the chained eval's scope: the instruction removes the market from day 1 and
+  locks day 2, so that removal assertion now checks day 1 only. Default/global exclusions
+  still inspect all days; highlights are still checked; empty/missing scopes fail. New
+  red fixtures retain actual day-1 violations and verify unchanged day 2. The suite hash
+  consequently changed; raw 27/29 and new scores are not a strict identical-check A/B.
+- Added bounded observed-hours candidates after a model repair still leaves only closure
+  blockers. Up to four candidates across at most three activities may use a feasible
+  same-venue time or an observed restaurant with published hours and matching price band.
+  Explicit venue requests, HH:MM requested times, reservation signals, detected dietary
+  preferences and locked days constrain automatic changes. Dinner is not moved into
+  breakfast hours. These conservative recognizers do not cover arbitrary user semantics.
+- Restaurant alternatives use Google-returned `places.types`, not a name heuristic;
+  unsupported/missing types or hours, same-name branch ambiguity and different/unknown
+  price bands are rejected. The field is supported by Google's
+  [Text Search documentation](https://developers.google.com/maps/documentation/places/web-service/text-search).
+  Old dishes/highlights are not attributed to the new venue. Estimated cost stays an
+  estimate, with a price/availability caveat; equal price band does not prove an exact bill.
+- Every candidate must pass the existing full static validator (including removals),
+  independent budget and fresh permitted-mode route checks. Newly unverified transfers
+  cannot authorize automatic changes. At most one extra full route pass per run; failure
+  restores the original itinerary/report and route evidence. Three model-repair rounds
+  and the one run-wide format allowance remain unchanged. No speculative venue discovery.
+- `repair.schedule` spans retain strategy/candidate-count/accepted flags, no private
+  contents. Added 36 deterministic tests for removal/scope/locks, meal semantics, bookings,
+  dietary constraints, branch/type/price/hour unknowns, route failures and final evidence
+  binding. Existing closure-failure test now explicitly requests 09:00, ensuring the new
+  fallback cannot resolve it by silently moving the requested slot; its failure assertions
+  remain intact. Full backend: 582 passed, 1 opt-in MCP deselected; Ruff/format/diff pass.
+- One authorized changed-version revision-sequence target is running on current
+  gpt-6-luna, with no unsupported price schedule. Report:
+  `.eval/phase1-edit-intent-hours-fix-2026-10-01.json`; previous red reports retained.
+  No source/harness changes during that live run. Android/dependencies unchanged;
+  no commit, push, system changes or container cleanup.
+- The single target completed **29/29**, 117.2s, 22 LLM calls, 154,324 tokens (58,291
+  cached), 33/35 research tools executed, 2 cache hits, zero retries/failures. Prices absent;
+  actual model/Maps cost unknown. All six plan traces persisted in Phoenix with complete
+  parent links and OK roots: `ed5e93738c0b42268acf015dc19e03bd` (47 spans),
+  `98b7e5a2b57d44e0b8a0fcf317f5047d` (36), `8960b887088b408c89bea7f36be9d09b`
+  (20), `4da3d8270b914dbf895cae12a2b70d56` (36), `85553db3997c4973a6eed4ad1cdfa65f`
+  (19), `b392a088bfa748eda25180db31d95075` (32).
+- No opening-hours failure or `repair.schedule` span occurred in that live target. The
+  fallback's accepted/rejected recovery and final route/venue evidence bindings have
+  deterministic offline evidence only; the live pass cannot be attributed to that branch.
+  Trace implementation hash: `3250e2a205656fc7e449865398d4f1f5fb6e84191ec2b0c3050d3c1d19987f9a`;
+  suite hash: `990a218451c57da04b82eca9e57007f1361b1d3f1bea1c66e9f1483068773dd7`.
+  Old/new checks differ in deletion scope, so 27/29->29/29 and fewer calls/tokens are
+  descriptive, not controlled efficiency or causal recovery proof. No current-version
+  smoke/full rerun; release gate remains pending, with the earlier full red report retained.
+
+## Current-model acceptance and remaining schedule authority gaps (2026-10-01)
+
+- The operator selected the currently configured `gpt-6-luna` for all new paid gates;
+  no model, endpoint, credentials or price schedule was changed. The first refreshed
+  smoke passed 5/5 (35/35), but the ensuing full was **7/9 (72/75)**: exclusions retained
+  two closing-time violations, while both New Orleans turns lacked accommodation.
+  Full: 79 model calls, 831,088 tokens, 179/193 research tools, 4 cache hits. All 16
+  planning traces persisted in Phoenix. Original failed reports are retained unchanged.
+- A generated lodging note previously satisfied the standalone feasibility checker even
+  when the traveller had not arranged lodging. Live planning now requires request-owned
+  `lodging_arranged: true` to exempt overnight plans. The nullable structured field and
+  conservative explicit-confirmation parser inherit across edits and reset on a new trip;
+  a new hotel request clears prior confirmation. Android preserves the field through
+  response/revision serialization. Legacy standalone validation without request context
+  still accepts old saved-plan lodging notes; the live pipeline always supplies context.
+- Prune time-conflicting partial hours candidates before they occupy the four-candidate
+  beam. Repair context also states weekday-specific open/close/latest-start bounds using
+  each activity's current duration, distinguishes closed from unknown and announces its
+  12-activity cap; locked-day activity contents are omitted. Three model repairs and the
+  shared format allowance remain unchanged.
+- The changed-version smoke was still **2/5 (32/35)**: Galleria Umberto and Hauser & Wirth
+  remained late, and a feasible lunch edit omitted the requested po-boy specialty. Its
+  complete report and seven Phoenix traces are retained; it is not presented as green.
+  A separate strict regression exposed candidate starvation; that bug fix alone was not
+  proof that packed schedules had feasible single-activity alternatives.
+- Added bounded prefix backfill for earlier observed closing windows. It can reflow at
+  most six activity timings across the candidate, on editable target days only. Transport
+  durations and original gaps remain; flexible visits/food retain at least 30 minutes,
+  rest 15, or their already shorter duration. Lodging, reservations, explicitly named
+  prefix venues, user HH:MM times/numeric durations and meal-time bands are protected. Prefix
+  visits cannot newly cross observed opening bounds. Venue identities, recommendations,
+  costs and subsequent activities remain. Full constraints and a fresh route pass must
+  still accept it; otherwise the original plan/report/route facts survive. This is not a
+  general solver, nor a guarantee that a 30-minute visit meets every unstated preference.
+- Explicit `change day N lunch/dinner/... to a <specialty> place/restaurant` clauses now
+  create run-scoped `MealRequirement` checks. Missing day/meal/specialty text produces
+  `constraint_mismatch`; another day, wrong meal/category or notes cannot satisfy it.
+  Hyphen/apostrophe/spacing variants match, generic/negated edits are not guessed.
+  Matching recommendations are NOT verified menus or availability. Automatic generic
+  restaurant substitution is disabled for explicit meal-target requirements; the server
+  never fixes this by fabricating dish recommendations.
+- Third-version targets passed exclusions 6/6, memory-recall 4/4 and revision 13/13:
+  24 calls, 208,709 tokens, 61/66 research tools, 1 cache hit, 3 degraded outcomes.
+  Source and case/check files were frozen during the run. The three target passes do not
+  replace refreshed smoke/full. Backend regression at that checkpoint: 620 passed,
+  one opt-in MCP deselected; Ruff/format pass. New scripts and tests use existing deps.
+- Current-version live dependency fault injection intentionally repeats a closed-hours
+  candidate after genuine model outputs, with real Places, timezone and Routes responses.
+  A museum 18:00-19:00 after the observed 17:00 close becomes 16:00-17:00; the park prefix
+  moves 16:00-17:00 -> 14:30-15:00 with costs/venues/frame intact. Initial closure is
+  detected, one model repair runs, one observed-hours candidate is accepted, all three
+  route confirmation passes succeed. Trace `5adf8c6b9bf9423d90610316356ea3cb` has 46 spans,
+  complete parents, an OK root and implementation fingerprint
+  `bdc4e4ee874ab392d3ef63a5e1750cf30efd9aa5c39a4a33ff9a90c23df69fe0`.
+  This is explicitly injected integration evidence, not natural recovery-frequency data.
+- The first fault experiment hit Phoenix's acknowledgement/indexing race despite a
+  successful plan. A subsequent read-only verification confirmed the same persisted trace;
+  no additional paid call or report overwrite was used. The script now retries only the
+  read-only API, supports new-file re-verification, and retains the original failed check.
+- `scripts.benchmark_live` predeclares a two-repetition paired smoke experiment using the
+  identical cases/graders/model/date: serialized research/no cross-run cache control versus
+  current concurrency/cache. Cold cache and separate preference stores precede each arm;
+  first-arm order is seeded and reversed per case in the second repetition. Deduplication,
+  budgets, retries, prompts and mandatory route validation remain identical. All checks
+  must pass in both arms, and research executions OR summed/median-paired latency must
+  decrease. Provider/fact variance remains; a small sample is not statistical proof or
+  a billing claim. Benchmark sources must remain unchanged; failures cannot be averaged
+  away. Controlled efficiency acceptance is pending execution at this checkpoint.
+- Final current-source regression: **621 passed, one opt-in MCP deselected**; Ruff,
+  format and diff checks passed. Refreshed smoke **5/5 (35/35)** and full **9/9 (75/75)**
+  passed with the same fixed case/check suite. Full: 560.1s, 83 model calls, 775,970
+  tokens, 163/178 research tools, 7 cache hits, 3 degraded outcomes. All 16 full traces
+  persisted with complete parents; the impossible-budget case correctly stays infeasible.
+- The paired experiment completed all 20 samples on unchanged application/suite/harness
+  sources. Both arms passed 10/10 samples and 70/70 checks. Serial/no-shared-cache control
+  versus current: 749.8s -> 604.2s (-19.4%), 185 -> 183 research executions, 82 -> 77
+  model calls, 1,020,134 -> 838,174 tokens. Median paired time ratio 0.8838. All 28 plan
+  traces passed read-only Phoenix persistence/parent/fingerprint checks. The predeclared
+  sample gate passed; one pair was slower and current research degraded outcomes rose
+  3 -> 6. Model/fact variance and two repetitions prohibit statistical production,
+  exclusive cache/concurrency causal or billing claims. Actual model/Maps costs unknown.
+- Together with the explicitly injected packed-prefix live recovery, the three remaining
+  phase-one acceptance gates are closed for this implementation and fixed cases. Natural
+  fallback frequency, exhaustive venue/menu verification and general schedule feasibility
+  are not claimed. Reports and limitations are in `observability/efficiency.md`; original
+  failed reports remain intact, with no same-version reruns chosen for a better score.
+- The changed Android DTO and contract test source were recompiled with existing cached
+  Kotlin/serialization/JUnit dependencies: **14 contract tests passed**. No Gradle process,
+  download or global-cache write; all outputs/temp files are workspace-local, and unchanged
+  compiled `ApiJson` was reused. A fresh full Android suite/APK was not run. No dependencies,
+  model configuration, system configuration, commit or push changes; test stack retained.
