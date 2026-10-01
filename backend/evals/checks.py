@@ -38,7 +38,7 @@ class RevisionCheck:
         return self.fn(before, after)
 
 
-def _scheduled_text(result: PlanResult) -> str:
+def _scheduled_text(result: PlanResult, day_indexes: tuple[int, ...] | None = None) -> str:
     """What is actually on the schedule: activity titles, places and categories.
 
     Excludes day summaries, activity notes and trip notes, which are *commentary about*
@@ -51,7 +51,9 @@ def _scheduled_text(result: PlanResult) -> str:
     if itinerary is None:
         return ""
     parts: list[str] = []
-    for day in itinerary.days:
+    for day_index, day in enumerate(itinerary.days):
+        if day_indexes is not None and day_index not in day_indexes:
+            continue
         for activity in day.activities:
             parts.extend(filter(None, [activity.title, activity.location, activity.category]))
             # Highlights are recommendations, not commentary: "try the hiking trail"
@@ -202,7 +204,7 @@ def used_tool(name: str) -> Check:
     return Check(f"called {name}", check)
 
 
-def avoids(*keywords: str) -> Check:
+def avoids(*keywords: str, day_indexes: tuple[int, ...] | None = None) -> Check:
     """Nothing in the user-visible text mentions what the traveller ruled out.
 
     Multi-character keywords only: one CJK character matches half the place names in a
@@ -211,7 +213,13 @@ def avoids(*keywords: str) -> Check:
     """
 
     def check(result: PlanResult) -> str | None:
-        text = _scheduled_text(result)
+        if day_indexes is not None and (
+            not day_indexes
+            or result.itinerary is None
+            or any(i < 0 or i >= len(result.itinerary.days) for i in day_indexes)
+        ):
+            return "requested day scope is missing"
+        text = _scheduled_text(result, day_indexes)
         snippets = []
         for word in keywords:
             index = text.find(word.lower())

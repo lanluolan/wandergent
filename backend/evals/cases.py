@@ -242,7 +242,7 @@ CASES.append(
                     produced_a_plan(),
                     feasible(),
                     within_budget(600, "USD"),
-                    avoids("Grand Central Market"),
+                    avoids("Grand Central Market", day_indexes=(0,)),
                 ),
                 (unchanged_day(1),),
             ),

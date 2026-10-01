@@ -44,6 +44,7 @@ def diagnostic_snapshot(result) -> dict:
     constraints = getattr(result, "constraints", None)
     return {
         "schema_version": 2,
+        "trace_id": getattr(result, "trace_id", None),
         "days": [
             [
                 {
