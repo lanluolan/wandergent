@@ -142,12 +142,10 @@ a transport leg. Actual gaps, fresh route checks, opening hours, budget and lock
 protection remain enforced. Backend regression: **546 passed, 1 opt-in MCP deselected**;
 Ruff/format pass. Android was not changed or rebuilt in this turn.
 
-Current configuration is **gpt-6-luna**, unlike the retained gpt-5.6-luna runs. One target
+Current configuration is **gpt-6-luna**. One target
 passed memory-recall **4/4** (110.0s, 11 calls, 138,941 tokens). The LA turn initially had
 six measured transfer failures and an over-budget finding; one constraint repair cleared
-them on complete revalidation. The target command inherited old operator rates: its
-`cost_usd` is only an old-rate conversion, not a supported current-model estimate.
-Actual cost is unknown. Subsequent smoke/full reports omit prices.
+them on complete revalidation. Actual cost is unknown. Smoke/full reports omit prices.
 
 The fixed five-case smoke passed **5/5 cases, 35/35 checks**: 299.2s, 36 calls, 362,726
 tokens (150,116 cached), 90/103 research tools executed, zero cache hits and 2 degraded
@@ -175,56 +173,8 @@ better stochastic outcome. Reports retain the original failures and raw timing:
 
 All three used the same implementation/suite. Trace implementation fingerprint:
 `d68205fca7030e6f98d56ddf1afd7b41923f4511fbd3ca16e13e5d122c44f0ed`.
-Historical smoke comparison flags the changed model/rates: calls rose 32->36 and tools
-81->90 while quality recovered 4/5->5/5. No causal efficiency improvement is established.
 At that checkpoint, remaining gates were chained-revision repair and live efficiency.
 The newer target above does not replace a refreshed full gate.
-
-## Retained pre-transfer-fix release failure
-
-Authorized five-case smoke: **4/5 cases, 34/35 checks**, 546.7 seconds, 32 LLM calls,
-409,080 tokens (151,287 cached), 81/81 research tools executed, zero cache hits and
-7 degraded tool outcomes. Estimated model cost: **$0.10634934**, using historical
-operator rates 0.20/0.02/1.20 USD per million input/cached/output tokens, not asserted
-current prices or an actual bill. Maps and long-context charges are excluded.
-
-Budget, specifics, exclusions and revision passed. Memory-recall's preference checks
-passed but hard-constraint feasibility failed: Holiday Lodge → Fixins Soul Kitchen had
-a zero-minute gap while the measured requirement was 40 minutes. All three repair
-outputs parsed, so no format correction was used; this is a remaining schedule-repair
-failure, not an invalid JSON or memory-recall failure. No full run followed the red gate,
-and the smoke was not rerun to select a better stochastic result.
-
-Raw report: `backend/.eval/phase1-release-smoke-2026-10-01.json`. All seven planning
-traces were verified in Phoenix. Failed trace: `b259d1ad7246453fa1da25148bf79775`,
-84 persisted spans, three repair nodes, infeasible/error root and stable failure codes.
-
-## Historical live comparison: descriptive, not causal
-
-Same five case IDs, model, reference date, Maps setting, suite hash and token rates:
-
-| Report | Cases | Calls | Seconds | Tokens | Estimated model USD |
-|---|---:|---:|---:|---:|---:|
-| Earlier all-green smoke subset | 5/5 | 35 | 477.1 | 379,198 | 0.09912090 |
-| Prior tool-planning smoke | 3/5 | 37 | 543.1 | 413,689 | 0.10366972 |
-| Pre-transfer-fix smoke | 4/5 | 32 | 546.7 | 409,080 | 0.10634934 |
-
-Compared with the all-green baseline, calls fell by 3, but time rose by 69.6 seconds,
-tokens by 29,882 and one case regressed. Compared with the immediate red baseline,
-one case recovered and calls fell by 5, but time/cost did not improve. Thus **lower
-calls/latency with no quality regression is not demonstrated**. Model and live upstream
-variation are not isolated, so these deltas cannot be attributed solely to this change.
-Older reports without tool metrics are `unknown`, not zero.
-
-From `backend/`, without external calls:
-
-```powershell
-python -m scripts.compare_evals ../docs/eval-runs/strengthening-after.json .eval/phase1-release-smoke-2026-10-01.json
-python -m scripts.compare_evals .eval/phase3-smoke.json .eval/phase1-release-smoke-2026-10-01.json
-```
-
-The script joins shared case IDs, reports setting mismatches/missing metadata and quality
-regressions, and explicitly does not certify a causal efficiency improvement.
 
 ## Frozen-fixture mechanics: demonstrated within this workload
 

@@ -24,7 +24,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 MAX_SPANS = 512
-TOOL_NAMES = {"search_places", "get_weather_forecast", "get_travel_time", "remember_preference"}
+TOOL_NAMES = {"search_places", "get_weather_forecast", "get_travel_time", "search_web"}
 _trace: ContextVar["RunTrace | None"] = ContextVar("run_trace", default=None)
 _parent: ContextVar[str] = ContextVar("span_parent", default="")
 

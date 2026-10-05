@@ -9,8 +9,20 @@ A travel-planning agent that turns a sentence into a feasible itinerary — and 
 
 Python + FastAPI + LangGraph backend, Kotlin + Jetpack Compose client, tools published over MCP.
 
-In the Android app, **You → Saved preferences** lists what the planner remembers and lets
-you delete individual preferences. Changes apply to future planning runs.
+Planning uses the vendored [Travel Planner skill](backend/skills/travel-planner/SKILL.md)
+for intake, pace, daily rhythm, fatigue, budget guidance, preparation and itinerary review.
+Wanderlog execution is disabled. Android displays the guide and daily backup options;
+saved plans, revisions and shared trips retain them. Existing code still verifies costs,
+opening hours, request-owned bookings and routes after generation and repair.
+
+The skill is stateless: planning uses the current request and current trip context,
+without reading or writing durable preferences. **You → Saved preferences** remains
+available to view and delete old records; those records no longer shape new plans.
+
+Set `BRAVE_SEARCH_API_KEY` on the server for web research beyond Maps and weather.
+Search results include source URLs, excerpts and collection times. Excerpts are partial
+evidence, not verified availability or full-page review. Missing configuration or failed
+queries return explicit research gaps. No additional Python dependency is required.
 
 <!-- TODO: add a demo GIF of the streaming UI here -- it is the single most persuasive thing on this page. -->
 
@@ -47,12 +59,12 @@ per case), so the absolute figures describe the subset as it stood on that date.
 Every number came from the eval harness or a traced live run, not an estimate; the reasoning and
 the rejected alternatives behind each are in [`docs/decisions.md`](docs/decisions.md).
 
-**Today**: 9 live LLM eval cases cover single plans, memory, impossible budgets, one-off edits,
+The previous planning policy's 9 live LLM eval cases cover single plans, memory, impossible budgets, one-off edits,
 five chained edits and switching to a new trip. Each report records source and suite hashes,
 pass/failure reasons, calls, tokens, elapsed time and operator-supplied cost rates.
-The current tree passes **621 offline backend tests** (one opt-in MCP test deselected),
-Ruff and formatting. Current live configuration is **gpt-6-luna**, unlike the earlier
-gpt-5.6-luna reports. Three changed-version targets passed 23/23 checks; latest smoke
+That policy passed **621 offline backend tests** (one opt-in MCP test deselected),
+Ruff and formatting. Current live configuration is **gpt-6-luna**.
+Three changed-version targets passed 23/23 checks; latest smoke
 passed **5/5 (35/35)**; refreshed full passed **9/9 (75/75)**. The same-model paired
 live efficiency sample passed: both arms 10/10 cases and 70/70 checks; current total
 elapsed time 604.2s versus serial/no-shared-cache control 749.8s (**19.4% lower**).
@@ -84,20 +96,28 @@ model quality or end-to-end efficiency claim.
 flowchart LR
     A["Android · Compose"] -->|SSE| B["FastAPI"]
     B --> C{"LangGraph"}
-    C -->|tool loop| D["Tools"]
+    C -->|tool loop| I["MCP client"]
+    I -->|stdio JSON-RPC| D["MCP research server"]
     C -->|validate / repair| E["Constraint rules"]
     D --> F["Open-Meteo"]
     D --> G["Google Maps · Places / Routes / Static"]
-    D --> H["Preference memory · SQLite"]
-    E -.measure real-stop hops.-> G
-    D -.republished.-> I["MCP server"]
+    D --> H["Brave Search · source excerpts"]
+    E -.measure real-stop hops.-> I
+    B -->|map rendering| G
 ```
 
 The graph has seven nodes and three cycles: `gather → run_tools → gather` (bounded), `parse → emit → emit` (one retry), and `validate → repair → validate` (at most three repairs). Routing lives in small predicate functions; the nodes only do work.
 
 The dotted edge back to Routes is the part worth noticing: the constraint layer's string heuristic only *proposes*. It also creates advisory candidates for the other real-stop hops, then measures a bounded set at the hour the traveller leaves, using the declared and permitted mode. A fast car route cannot clear a walking plan, and a failed measurement cannot silently declare the hop feasible.
 
-MCP is a **second surface, not a replacement** — the agent keeps calling tools in-process, so no JSON-RPC round trip is added inside one process and per-request identity survives. The memory tool is deliberately not published, because that surface has no authenticated user.
+The App backend calls weather, venue, route and web research through its own MCP server
+over stdio. Route validation uses the same MCP path and includes the departure time.
+Each uncached tool batch shares a server session and HTTP pool; cache hits avoid starting
+the server. The backend starts and closes the child process automatically, with no port
+or separately managed service. Tool budgets, concurrency limits and retries remain in
+the planner. MCP failures return typed failures without a direct-call fallback. Account
+identity stays in the backend; the research server exposes no memory writes or Wanderlog
+tools. Google Maps and Brave Search keys are configured only on the backend.
 
 ## Quickstart
 
@@ -167,7 +187,7 @@ written from memory: [`docs/api.md`](docs/api.md).
 ## Status
 
 Phases 1–3 are done and verified on a physical device: weather, Google Places and Routes tools,
-streaming, constraint validation, preference memory, MCP, accounts and a shared-trip feed. Phase 4
+streaming, constraint validation, legacy preference management, MCP, accounts and a shared-trip feed. Phase 4
 (observability, caching, deploy) is in progress — Docker and compose have landed.
 
 ## Docs

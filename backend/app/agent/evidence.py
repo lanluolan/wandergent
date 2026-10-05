@@ -2,6 +2,53 @@
 
 from app.agent.results import ActivityEvidence, ToolCallRecord
 from app.agent.schemas import Itinerary
+from app.tools.place_summary import PlaceSummary
+
+
+def bind_place_summaries(
+    itinerary: Itinerary | None, records: list[ToolCallRecord]
+) -> Itinerary | None:
+    if itinerary is None:
+        return None
+    result = itinerary.model_copy(deep=True)
+    places = [
+        (place, record.collected_at)
+        for record in records
+        if record.ok and record.name == "search_places"
+        for place in record.fact_payload.get("places") or []
+        if isinstance(place, dict) and place.get("name")
+    ]
+    for day in result.days:
+        for activity in day.activities:
+            activity.place_summary = None
+            activity.highlights = []
+            if activity.category == "transport":
+                continue
+            location = (activity.location or "").strip().casefold()
+            matches = [
+                (place, timestamp)
+                for place, timestamp in places
+                if location
+                and location
+                in {
+                    str(place["name"]).strip().casefold(),
+                    str(place.get("address") or "").strip().casefold(),
+                    f"{place['name']}, {place.get('address') or ''}".strip().casefold(),
+                }
+            ]
+            if not matches or len({(p["name"], p.get("address")) for p, _ in matches}) != 1:
+                continue
+            place, timestamp = max(matches, key=lambda match: match[1] or "")
+            summary = place.get("editorial_summary")
+            if not isinstance(summary, dict):
+                continue
+            try:
+                activity.place_summary = PlaceSummary.model_validate(
+                    {**summary, "source": "editorialSummary", "collected_at": timestamp}
+                )
+            except ValueError:
+                continue
+    return result
 
 
 def activity_evidence(
@@ -39,7 +86,7 @@ def activity_evidence(
                 evidence.collected_at = timestamp
                 evidence.venue_verified = True
                 evidence.hours_available = bool(place.get("opening_hours"))
-                evidence.price_level_available = bool(place.get("price_level"))
+                evidence.price_range_available = bool(place.get("price_range"))
             if activity_index and activity.category != "transport":
                 earlier = sorted(
                     (

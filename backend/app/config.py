@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # What this project actually runs on. Named so the blank-means-unset validator can hand
 # back the same value the field defaults to.
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_MODEL = "gpt-6-luna"
 
 
 class Settings(BaseSettings):
@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     # Maps, server-side only: the app never sees this key, it receives rendered images.
     # Empty disables the maps tools rather than failing the run.
     google_maps_api_key: str = ""
+    brave_search_api_key: str = ""
 
     # The interactive map page runs the Maps JavaScript API in the user's WebView, so its
     # key reaches the device. Restrict this one to Maps JavaScript API alone, so a leak

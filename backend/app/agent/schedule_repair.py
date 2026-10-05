@@ -6,12 +6,14 @@ No venue discovery, speculative hours, cost increases or edits to locked days he
 
 import re
 from collections.abc import Iterator
+from datetime import date
 
 from app.agent import opening_hours
 from app.agent.results import ToolCallRecord
 from app.agent.revision import RevisionScope, contains_venue
 from app.agent.schemas import Activity, Itinerary
 from app.agent.validation import _match_known, _minutes, validate_itinerary
+from app.tools.money import range_average
 
 MAX_CANDIDATES = 4
 MAX_CHANGED_ACTIVITIES = 3
@@ -68,20 +70,22 @@ def _observed_restaurants(records: list[ToolCallRecord]) -> list[dict]:
 
 def _options(
     activity: Activity,
-    weekday: str,
+    visit_date: date,
     hours: dict[str, list[str]],
-    prices: dict[str, str],
+    prices: dict[str, dict],
     restaurants: list[dict],
     request: str,
     dietary_context: str,
 ) -> list[Activity]:
+    if activity.start_at is not None:
+        return []
     if _BOOKED.search(" ".join([request, activity.title, activity.notes or ""])):
         return []
     options = []
     start, end = _minutes(activity.start_time), _minutes(activity.end_time)
     meal = _meal(activity)
     if not re.search(r"\b\d{1,2}:\d{2}\b", request):
-        windows = opening_hours.parse(_match_known(activity, hours) or []).get(weekday, [])
+        windows = opening_hours.windows_for(_match_known(activity, hours) or [], visit_date) or []
         for open_at, close_at in windows:
             lower = max(open_at, 6 * 60, meal[1] if meal else 0)
             upper = min(close_at, 23 * 60 + 59, meal[2] if meal else 24 * 60) - (end - start)
@@ -109,13 +113,20 @@ def _options(
         )
     ):
         return options
-    old_price = _match_known(activity, prices)
+    old_price = range_average(_match_known(activity, prices))
     for place in restaurants:
         name = place["name"]
-        if name == old_name or not old_price or place.get("price_level") != old_price:
+        new_price = range_average(place.get("price_range"))
+        if (
+            name == old_name
+            or old_price is None
+            or new_price is None
+            or new_price.currency != old_price.currency
+            or new_price.amount > old_price.amount
+        ):
             continue
         descriptions = place.get("opening_hours") or []
-        windows = opening_hours.parse(descriptions).get(weekday)
+        windows = opening_hours.windows_for(descriptions, visit_date)
         if windows is None or not any(start >= left and end <= right for left, right in windows):
             continue
         options.append(
@@ -179,7 +190,11 @@ def _backfill_prefix(
             return None
         descriptions = _match_known(activity, hours)
         if descriptions and opening_hours.closed_reason(
-            descriptions, result.days[day_index].date.strftime("%A").lower(), start, latest_end
+            descriptions,
+            result.days[day_index].date.strftime("%A").lower(),
+            start,
+            latest_end,
+            visit_date=result.days[day_index].date,
         ):
             return None
         activities[index] = activity.model_copy(
@@ -196,7 +211,7 @@ def _backfill_prefix(
 def hours_candidates(
     plan: Itinerary,
     hours: dict[str, list[str]],
-    prices: dict[str, str],
+    prices: dict[str, dict],
     records: list[ToolCallRecord],
     *,
     scope: RevisionScope | None = None,
@@ -212,21 +227,31 @@ def hours_candidates(
                 continue
             descriptions = _match_known(activity, hours)
             if descriptions and opening_hours.closed_reason(
-                descriptions, weekday, _minutes(activity.start_time), _minutes(activity.end_time)
+                descriptions,
+                weekday,
+                _minutes(activity.start_time),
+                _minutes(activity.end_time),
+                visit_date=day.date,
             ):
                 if scope and day_index in scope.locked_days:
                     return
-                targets.append((day_index, activity_index, weekday))
+                targets.append((day_index, activity_index))
     if not targets or len(targets) > MAX_CHANGED_ACTIVITIES:
         return
     candidates = [plan]
     restaurants = _observed_restaurants(records)
-    for day_index, activity_index, weekday in targets:
+    for day_index, activity_index in targets:
         expanded = []
         for candidate in candidates:
             activity = candidate.days[day_index].activities[activity_index]
             for alternative in _options(
-                activity, weekday, hours, prices, restaurants, request, dietary_context
+                activity,
+                candidate.days[day_index].date,
+                hours,
+                prices,
+                restaurants,
+                request,
+                dietary_context,
             ):
                 changed = candidate.model_copy(deep=True)
                 changed.days[day_index].activities[activity_index] = alternative

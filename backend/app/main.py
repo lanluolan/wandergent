@@ -29,6 +29,7 @@ from app.agent.orchestrator import (
     plan_trip,
     stream_plan,
 )
+from app.agent.results import PlanContinuation
 from app.agent.schemas import Itinerary
 from app.auth import (
     Account,
@@ -249,6 +250,8 @@ class PlanRequest(BaseModel):
     previous: Itinerary | None = None
     constraints: TripConstraints | None = None
     previous_constraints: TripConstraints | None = None
+    continuation: PlanContinuation | None = None
+    weather_fallback_confirmed: bool = False
 
     @model_validator(mode="after")
     def check_constraints(self) -> "PlanRequest":
@@ -290,6 +293,8 @@ async def plan(
             previous=payload.previous,
             constraints=payload.constraints,
             previous_constraints=payload.previous_constraints,
+            continuation=payload.continuation,
+            weather_fallback_confirmed=payload.weather_fallback_confirmed,
         )
         await retain_feedback_run(account, result)
         return result
@@ -400,6 +405,8 @@ async def plan_stream(
                 previous=payload.previous,
                 constraints=payload.constraints,
                 previous_constraints=payload.previous_constraints,
+                continuation=payload.continuation,
+                weather_fallback_confirmed=payload.weather_fallback_confirmed,
             ):
                 if event.type == "result" and event.result is not None:
                     await retain_feedback_run(account, event.result)

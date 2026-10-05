@@ -29,7 +29,11 @@ class PlanRepository(
         currency: String = "",
         previous: Itinerary? = null,
         previousConstraints: TripConstraints? = null,
-    ): Flow<PlanEventDto> = streamClient.stream(message, currency, previous, previousConstraints)
+        continuation: PlanContinuation? = null,
+        weatherFallbackConfirmed: Boolean = false,
+    ): Flow<PlanEventDto> = streamClient.stream(
+        message, currency, previous, previousConstraints, continuation, weatherFallbackConfirmed,
+    )
 
     /**
      * Non-streaming fallback. Used when the stream dies before producing anything --
@@ -41,9 +45,14 @@ class PlanRepository(
         currency: String = "",
         previous: Itinerary? = null,
         previousConstraints: TripConstraints? = null,
+        continuation: PlanContinuation? = null,
+        weatherFallbackConfirmed: Boolean = false,
     ): PlanOutcome =
         try {
-            PlanOutcome.Success(api.plan(PlanRequest(message, currency, previous, previousConstraints)))
+            PlanOutcome.Success(api.plan(PlanRequest(
+                message, currency, previous, previousConstraints,
+                continuation = continuation, weatherFallbackConfirmed = weatherFallbackConfirmed,
+            )))
         } catch (e: HttpException) {
             val detail = ApiJson.parseErrorDetail(e.response()?.errorBody()?.string())
             describeFailure(e.code(), detail, e.retryAfterSeconds())

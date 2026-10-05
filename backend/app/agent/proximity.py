@@ -37,7 +37,7 @@ def haversine_km(first: tuple[float, float], second: tuple[float, float]) -> flo
     lat2, lon2 = math.radians(second[0]), math.radians(second[1])
     dlat, dlon = lat2 - lat1, lon2 - lon1
     inner = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(inner))
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(min(1.0, max(0.0, inner))))
 
 
 def walk_minutes(straight_km: float) -> int:
@@ -50,6 +50,27 @@ def _describe(straight_km: float) -> str:
     if minutes > WALKABLE_MINUTES:
         return f"{straight_km:.1f} km apart -- too far to walk, allow transit or a taxi"
     return f"{straight_km:.1f} km apart, about {minutes} min on foot"
+
+
+def clusters(points: dict[str, tuple[float, float]]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for name in sorted(points):
+        nearby = next(
+            (
+                group
+                for group in groups
+                if all(
+                    walk_minutes(haversine_km(points[name], points[other])) <= WALKABLE_MINUTES
+                    for other in group
+                )
+            ),
+            None,
+        )
+        if nearby is None:
+            groups.append([name])
+        else:
+            nearby.append(name)
+    return groups
 
 
 def render(points: dict[str, tuple[float, float]]) -> str | None:
@@ -74,6 +95,14 @@ def render(points: dict[str, tuple[float, float]]) -> str | None:
         "-- call get_travel_time for the pairs you actually put next to each other.",
         *pairs,
     ]
+    groups = clusters(dict(named))
+    if len(groups) > 1:
+        lines.append(
+            "Nearby groups (coordinate estimates, not route verification): "
+            + "; ".join(", ".join(group) for group in groups)
+            + ". Keep each group together where opening hours and reservations allow; "
+            "avoid returning between groups. Measure actual transfers with get_travel_time."
+        )
     if dropped_venues or dropped_pairs:
         lines.append(
             f"({dropped_venues} further venue(s) and {dropped_pairs} further pair(s) "

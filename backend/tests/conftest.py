@@ -17,6 +17,7 @@ documented as offline must not be able to tell.
 
 import os
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +28,23 @@ from app.ratelimit import limiter
 from app.tools.cache import shared_tool_cache
 
 TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / ".pytest-work"
+
+
+@pytest.fixture(autouse=True)
+def _offline_mcp_service(monkeypatch):
+    from app.agent import orchestrator, transfers
+    from app.tools import registry
+
+    async def fake_service(name, arguments, context=None):
+        return await registry.execute_local_tool(name, arguments, context)
+
+    @asynccontextmanager
+    async def fake_session():
+        yield None
+
+    monkeypatch.setattr(registry, "call_mcp_tool", fake_service)
+    monkeypatch.setattr(orchestrator, "research_session", fake_session)
+    monkeypatch.setattr(transfers, "research_session", fake_session)
 
 
 if os.name == "nt":
@@ -69,6 +87,7 @@ def _pinned_llm_settings(monkeypatch):
     monkeypatch.setattr(settings, "openai_base_url", "https://api.example.test/v1")
     monkeypatch.setattr(settings, "openai_model", "test-model")
     monkeypatch.setattr(settings, "google_maps_api_key", "")
+    monkeypatch.setattr(settings, "brave_search_api_key", "")
     monkeypatch.setattr(settings, "otel_exporter_otlp_traces_endpoint", "")
     monkeypatch.setattr(settings, "trace_directory", "")
     monkeypatch.setattr(settings, "trace_model_prices", {})
@@ -87,7 +106,6 @@ def _isolated_databases(tmp_path, monkeypatch):
     touch a store. A test wanting its own still builds one and patches over this.
     """
     from app import auth, community, main, memory
-    from app.agent import orchestrator
     from app.auth.store import AuthStore
     from app.community.store import CommunityStore
     from app.feedback import FeedbackStore
@@ -105,6 +123,5 @@ def _isolated_databases(tmp_path, monkeypatch):
     preferences = PreferenceStore(tmp_path / "memory.db")
     monkeypatch.setattr(memory, "store", preferences)
     monkeypatch.setattr(main, "memory_store", preferences)
-    monkeypatch.setattr(orchestrator, "memory_store", preferences)
     monkeypatch.setattr(memory_tool, "default_store", preferences)
     monkeypatch.setattr(main, "feedback_store", FeedbackStore(tmp_path / "feedback.db"))

@@ -10,7 +10,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-TravelMode = Literal["WALK", "TRANSIT", "DRIVE"]
+from app.agent.timing import Arrival, HotelStay, Journey
+
+TravelMode = Literal["WALK", "TRANSIT", "DRIVE", "FLIGHT", "TRAIN"]
 
 
 class TripConstraints(BaseModel):
@@ -24,9 +26,18 @@ class TripConstraints(BaseModel):
     travelers: int | None = Field(default=None, ge=1, le=100)
     allowed_modes: list[TravelMode] | None = Field(default=None, min_length=1)
     lodging_arranged: bool | None = None
+    weather_fallback_dates: list[date] | None = Field(default=None, max_length=60)
+    arrival: Arrival | None = None
+    hotel_stays: list[HotelStay] | None = Field(default=None, max_length=60)
+    journeys: list[Journey] | None = Field(default=None, max_length=60)
 
     @model_validator(mode="after")
     def consistent_dates(self) -> "TripConstraints":
+        for collection in (self.hotel_stays or [], self.journeys or []):
+            if len({item.id for item in collection}) != len(collection):
+                raise ValueError(
+                    "hotel stay and journey IDs must be unique within their collection"
+                )
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("end_date must not precede start_date")
         if self.start_date and self.end_date and self.days is not None:
@@ -38,6 +49,53 @@ class TripConstraints(BaseModel):
 
 def starts_new_trip(request: str) -> bool:
     return bool(re.match(r"\s*(?:new trip\b|start a new trip\b|新旅行|新的旅行)", request, re.I))
+
+
+def _timing_from_text(request: str) -> dict:
+    stamp = r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(?::\d{2})?(?:[Zz]|[+-]\d{2}:\d{2})"
+    values = {}
+    arrival = re.search(
+        rf"(?:\barrival|抵达)\s*[:：]\s*(?P<location>[^,，;\n]+)[,，]\s*(?P<at>{stamp})",
+        request,
+        re.I,
+    )
+    if arrival:
+        try:
+            values["arrival"] = Arrival.model_validate(arrival.groupdict())
+        except ValueError:
+            pass
+    hotels = re.finditer(
+        rf"\bhotel\s+(?P<id>[\w-]+)\s*:\s*(?P<hotel>[^,;\n]+),\s*"
+        rf"check-in\s+(?P<check_in>{stamp}),\s*check-out\s+(?P<check_out>{stamp})",
+        request,
+        re.I,
+    )
+    stays = []
+    for match in hotels:
+        try:
+            stays.append(HotelStay.model_validate(match.groupdict()))
+        except ValueError:
+            pass
+    if stays:
+        values["hotel_stays"] = stays
+    legs = re.finditer(
+        rf"\bjourney\s+(?P<id>[\w-]+)\s*:\s*(?P<mode>FLIGHT|TRAIN|DRIVE|TRANSIT),\s*"
+        rf"(?P<origin>[^,;\n]+?)\s*(?:->|→)\s*(?P<destination>[^,;\n]+),\s*"
+        rf"(?P<departure>{stamp})\s*(?:->|→)\s*(?P<arrival>{stamp})",
+        request,
+        re.I,
+    )
+    journeys = []
+    for match in legs:
+        try:
+            payload = match.groupdict()
+            payload["mode"] = payload["mode"].upper()
+            journeys.append(Journey.model_validate(payload))
+        except ValueError:
+            pass
+    if journeys:
+        values["journeys"] = journeys
+    return values
 
 
 def resolve_constraints(
@@ -73,7 +131,7 @@ def resolve_constraints(
     party = re.search(r"\b(\d+)\s+(?:travelers|travellers|people|adults)\b|([0-9]+)\s*人", text)
     if party:
         values["travelers"] = int(party[1] or party[2])
-    dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", request)
+    dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b(?![Tt])", request)
     if 1 <= len(dates) <= 2:
         try:
             start = date.fromisoformat(dates[0])
@@ -110,6 +168,7 @@ def resolve_constraints(
             values["lodging_arranged"] = True
     if currency and not values.get("currency"):
         values["currency"] = currency.upper()
+    values.update(_timing_from_text(request))
     if confirmed is not None:
         values.update(confirmed.model_dump(exclude_unset=True))
     return TripConstraints.model_validate(values)

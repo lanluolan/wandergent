@@ -15,15 +15,17 @@ so the answer is deterministic and testable.
 """
 
 import re
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 from app.agent import opening_hours
 from app.agent.constraints import TripConstraints
 from app.agent.revision import MealRequirement, VenueRemoval, contains_venue
 from app.agent.schemas import Activity, DayPlan, Itinerary
+from app.agent.timing import check_timing, missing_nights
+from app.tools.money import range_average
 
 # A plan that moves between two places with less than this and no transport activity
 # is claiming teleportation.
@@ -63,6 +65,11 @@ ViolationCode = Literal[
     "vague_venue",
     "outside_opening_hours",
     "understated_cost",
+    "arrival_conflict",
+    "hotel_window_conflict",
+    "journey_conflict",
+    "temporal_unverified",
+    "journey_time_estimated",
 ]
 
 # Most codes describe a plan contradicting itself or the world -- two activities at once, a
@@ -73,35 +80,8 @@ ViolationCode = Literal[
 # says "pack it in" and gets a 13-hour day got what they asked for, and the late jazz set
 # past the cutoff is why they came. Reported, never enforced.
 ADVISORY_CODES: frozenset[str] = frozenset(
-    {"overlong_day", "unsociable_hours", "transfer_unverified"}
+    {"overlong_day", "unsociable_hours", "transfer_unverified", "journey_time_estimated"}
 )
-
-# A band is far too coarse to price an activity -- "MODERATE" means different things in
-# different cities -- so the only inference drawn needs no scale at all: a venue Google
-# prices *at all* does not cost nothing. That is also the dangerous direction, since an
-# activity budgeted at zero is a plan claiming to fit a budget it has not accounted for.
-#
-# FREE and UNSPECIFIED are excluded: FREE against a non-zero cost is not a contradiction,
-# because a picnic in a free park still costs what the picnic costs.
-PAID_PRICE_LEVELS = (
-    "PRICE_LEVEL_INEXPENSIVE",
-    "PRICE_LEVEL_MODERATE",
-    "PRICE_LEVEL_EXPENSIVE",
-    "PRICE_LEVEL_VERY_EXPENSIVE",
-)
-
-# Categories where a zero is the normal way to write a real cost, so a price band proves
-# nothing: a four-night hotel is billed once with the other nights at 0, transport is not
-# a venue, and "rest at the hotel" costs what was already paid. Belt-and-braces today --
-# Google returns no band for hotels or museums -- but coverage is Google's to change.
-COST_EXEMPT_CATEGORIES = ("transport", "accommodation", "rest")
-
-PRICE_LEVEL_WORDS = {
-    "PRICE_LEVEL_INEXPENSIVE": "inexpensive but not free",
-    "PRICE_LEVEL_MODERATE": "moderately priced",
-    "PRICE_LEVEL_EXPENSIVE": "expensive",
-    "PRICE_LEVEL_VERY_EXPENSIVE": "very expensive",
-}
 
 # Phrases that mean the model declined to choose. Deliberately short and unambiguous:
 # the same bias as the transfer rule, because a false alarm sends the agent off to
@@ -175,6 +155,8 @@ class Violation(BaseModel):
     #: skeleton timetable, which is not the trip.
     depart_at_minute: int | None = None
     travel_mode: str | None = None
+    departure_instant: AwareDatetime | None = None
+    arrival_deadline: AwareDatetime | None = None
 
     @property
     def advisory(self) -> bool:
@@ -299,7 +281,7 @@ def _same_place(first: Activity, second: Activity) -> bool:
 def validate_itinerary(
     itinerary: Itinerary,
     known_hours: dict[str, list[str]] | None = None,
-    known_prices: dict[str, str] | None = None,
+    known_prices: dict[str, dict] | None = None,
     *,
     constraints: TripConstraints | None = None,
     removals: list[VenueRemoval] | None = None,
@@ -321,6 +303,9 @@ def validate_itinerary(
     violations.extend(_check_budget(itinerary, ceiling))
     violations.extend(_check_days(itinerary))
     violations.extend(_check_accommodation(itinerary, constraints))
+    violations.extend(
+        Violation(**issue) for issue in check_timing(itinerary, constraints or itinerary.timing)
+    )
     for requirement in meals or []:
         if not 0 <= requirement.day_index < len(itinerary.days):
             violations.append(
@@ -354,7 +339,7 @@ def validate_itinerary(
             else:
                 left, right = bands[meal]
                 correct_meal = left <= _minutes(activity.start_time) < right
-            text = " ".join([activity.title, activity.location or "", *activity.highlights])
+            text = " ".join([activity.title, activity.location or ""])
             return correct_meal and bool(re.search(pattern, text.lower()))
 
         if not any(matches(activity) for activity in day.activities):
@@ -364,7 +349,7 @@ def validate_itinerary(
                     day=day.date,
                     message=f"Day {requirement.day_index + 1} {requirement.meal} must visibly "
                     f"satisfy the requested {requirement.specialty!r} specialty in its title, "
-                    "venue or recommendations. Notes or another day's meal do not satisfy this. "
+                    "venue. Legacy highlights, notes or another day's meal do not satisfy this. "
                     "Choose a suitable venue without rewriting locked days or inventing menu "
                     "verification; preserve this requirement during time/route repair.",
                 )
@@ -404,7 +389,9 @@ def validate_itinerary(
     for day in itinerary.days:
         violations.extend(_check_day(day))
         violations.extend(_check_opening_hours(day, known_hours or {}))
-        violations.extend(_check_price_levels(day, known_prices or {}))
+        violations.extend(
+            _check_price_ranges(day, known_prices or {}, itinerary.travelers, itinerary.currency)
+        )
 
     return ValidationReport(violations=violations)
 
@@ -416,18 +403,34 @@ def transfer_candidates(plan: Itinerary, report: ValidationReport) -> Validation
         (v.day, v.origin, v.destination) for v in violations if v.code == "insufficient_transfer"
     }
     for day in plan.days:
-        ordered = sorted(day.activities, key=lambda a: a.start_time)
+        ordered = sorted(
+            day.activities,
+            key=lambda a: (
+                a.start_at.astimezone(UTC)
+                if a.start_at
+                else datetime.combine(day.date, time.fromisoformat(a.start_time), UTC)
+            ),
+        )
         stops = [(i, a) for i, a in enumerate(ordered) if a.category != "transport" and a.location]
         for (left_index, left), (right_index, right) in zip(stops, stops[1:], strict=False):
             if left.location == right.location:
                 continue
             legs = [a for a in ordered[left_index + 1 : right_index] if a.category == "transport"]
+            if any(leg.journey_id for leg in legs):
+                continue
             modes = {transport_mode(a) for a in legs} - {None}
             mode = next(iter(modes)) if len(modes) == 1 else None
             key = (day.date, left.location, right.location)
             if key in existing:
                 continue
-            gap = _minutes(right.start_time) - _minutes(left.end_time)
+            gap = (
+                int(
+                    (right.start_at.astimezone(UTC) - left.end_at.astimezone(UTC)).total_seconds()
+                    // 60
+                )
+                if right.start_at and left.end_at
+                else _minutes(right.start_time) - _minutes(left.end_time)
+            )
             if gap < 0:
                 continue
             violations.append(
@@ -439,6 +442,8 @@ def transfer_candidates(plan: Itinerary, report: ValidationReport) -> Validation
                     gap_minutes=gap,
                     depart_at_minute=_minutes(left.end_time),
                     travel_mode=mode,
+                    departure_instant=left.end_at,
+                    arrival_deadline=right.start_at,
                     message=f"Unverified travel time: {left.location} to {right.location}.",
                 )
             )
@@ -544,16 +549,42 @@ def _check_opening_hours(day: DayPlan, known_hours: dict[str, list[str]]) -> lis
     if not known_hours:
         return []
 
-    weekday = day.date.strftime("%A").lower()
     violations: list[Violation] = []
     for activity in day.activities:
-        if _is_transport(activity):
+        if _is_transport(activity) or activity.hotel_stay_id:
             continue
         descriptions = _match_known(activity, known_hours)
         if not descriptions:
             continue
-        reason = opening_hours.closed_reason(
-            descriptions, weekday, _minutes(activity.start_time), _minutes(activity.end_time)
+        segments = [(day.date, _minutes(activity.start_time), _minutes(activity.end_time))]
+        if activity.start_at and activity.end_at:
+            cursor = activity.start_at
+            end = activity.end_at.astimezone(cursor.tzinfo)
+            segments = []
+            while cursor < end:
+                midnight = datetime.combine(
+                    cursor.date() + timedelta(days=1), time(), cursor.tzinfo
+                )
+                boundary = min(midnight, end)
+                segments.append(
+                    (
+                        cursor.date(),
+                        cursor.hour * 60 + cursor.minute,
+                        1440 if boundary == midnight else boundary.hour * 60 + boundary.minute,
+                    )
+                )
+                cursor = boundary
+        reason = next(
+            (
+                reason
+                for visit_date, start, end in segments
+                if (
+                    reason := opening_hours.closed_reason(
+                        descriptions, visit_date.strftime("%A").lower(), start, end, visit_date
+                    )
+                )
+            ),
+            None,
         )
         if reason is None:
             continue
@@ -572,36 +603,28 @@ def _check_opening_hours(day: DayPlan, known_hours: dict[str, list[str]]) -> lis
     return violations
 
 
-def _check_price_levels(day: DayPlan, known_prices: dict[str, str]) -> list[Violation]:
-    """Nothing Google charges for is budgeted at nothing.
-
-    The narrowest useful thing a price *band* can say. Every cost in a plan is the model's
-    invention and the budget check is only as good as those inventions: a dinner entered
-    at 0 makes an over-budget trip validate cleanly. See `PAID_PRICE_LEVELS` for what is
-    deliberately not concluded.
-    """
-    if not known_prices:
-        return []
-
-    violations: list[Violation] = []
+def _check_price_ranges(
+    day: DayPlan, known_prices: dict[str, dict], travelers: int, currency: str
+) -> list[Violation]:
+    violations = []
     for activity in day.activities:
-        if activity.category in COST_EXEMPT_CATEGORIES or activity.estimated_cost > 0:
+        if activity.category != "food":
             continue
-        level = _match_known(activity, known_prices)
-        if level not in PAID_PRICE_LEVELS:
+        average = range_average(_match_known(activity, known_prices))
+        if average is None or average.currency != currency:
             continue
-        violations.append(
-            Violation(
-                code="understated_cost",
-                day=day.date,
-                message=(
-                    f"On {day.date}, '{activity.title}' is budgeted at 0, but Google "
-                    f"lists {activity.location or activity.title} as "
-                    f"{PRICE_LEVEL_WORDS[str(level)]}. Put a realistic estimate on it "
-                    "and keep the trip inside the budget, or choose somewhere free."
-                ),
+        expected = round(average.amount * travelers, 2)
+        if activity.estimated_cost + 0.005 < expected:
+            violations.append(
+                Violation(
+                    code="understated_cost",
+                    day=day.date,
+                    message=f"On {day.date}, '{activity.title}' "
+                    f"costs {activity.estimated_cost:.2f}, "
+                    f"below the restaurant priceRange midpoint estimate {expected:.2f} {currency} "
+                    f"for {travelers} traveller(s). Include this estimate; stay within budget.",
+                )
             )
-        )
     return violations
 
 
@@ -615,6 +638,20 @@ def _check_accommodation(
     context is available, for saved plans predating the constraint snapshot.
     """
     if itinerary.end_date <= itinerary.start_date:
+        return []
+    timing = constraints or itinerary.timing
+    if timing and timing.hotel_stays is not None:
+        missing = missing_nights(itinerary, timing)
+        if not missing:
+            return []
+        return [
+            Violation(
+                code="missing_accommodation",
+                message="Hotel stays or overnight journeys must cover these local nights: "
+                + ", ".join(str(night) for night in missing),
+            )
+        ]
+    if timing and timing.journeys and not missing_nights(itinerary, timing):
         return []
     if any(
         activity.category == "accommodation"
@@ -703,7 +740,14 @@ def _check_day(day: DayPlan) -> list[Violation]:
             )
         ]
 
-    ordered = sorted(day.activities, key=lambda item: _minutes(item.start_time))
+    ordered = sorted(
+        day.activities,
+        key=lambda item: (
+            item.start_at.astimezone(UTC)
+            if item.start_at
+            else datetime.combine(day.date, time.fromisoformat(item.start_time), UTC)
+        ),
+    )
 
     for activity in ordered:
         hedge = _hedge_in(activity)
@@ -722,7 +766,7 @@ def _check_day(day: DayPlan) -> list[Violation]:
 
         start = _minutes(activity.start_time)
         end = _minutes(activity.end_time)
-        if start < EARLIEST_START_MINUTE or end > LATEST_END_MINUTE:
+        if not activity.journey_id and (start < EARLIEST_START_MINUTE or end > LATEST_END_MINUTE):
             violations.append(
                 Violation(
                     code="unsociable_hours",
@@ -736,9 +780,21 @@ def _check_day(day: DayPlan) -> list[Violation]:
             )
 
     for earlier, later in zip(ordered, ordered[1:], strict=False):
-        gap = _minutes(later.start_time) - _minutes(earlier.end_time)
+        absolute = earlier.end_at is not None and later.start_at is not None
+        if not absolute and (earlier.start_at is not None or later.start_at is not None):
+            continue
+        gap = (
+            int(
+                (later.start_at.astimezone(UTC) - earlier.end_at.astimezone(UTC)).total_seconds()
+                // 60
+            )
+            if absolute
+            else _minutes(later.start_time) - _minutes(earlier.end_time)
+        )
 
         if gap < 0:
+            if absolute:
+                continue
             violations.append(
                 Violation(
                     code="time_conflict",
@@ -767,6 +823,8 @@ def _check_day(day: DayPlan) -> list[Violation]:
                     destination=later.location,
                     gap_minutes=gap,
                     depart_at_minute=_minutes(earlier.end_time),
+                    departure_instant=earlier.end_at,
+                    arrival_deadline=later.start_at,
                     message=(
                         f"On {day.date}, only {gap} minutes separate "
                         f"'{earlier.title}' at {earlier.location} from "

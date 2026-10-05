@@ -133,8 +133,9 @@ WEATHER_TOOL_SCHEMA: dict = {
             "Get the daily weather forecast for a city over a date range. Use it to decide "
             "whether outdoor activities are viable on a given day. Forecasts exist only for "
             "the next 16 days including today; asking about later dates succeeds but returns "
-            "no days and a note saying so, and the plan should then rely on seasonal norms "
-            "rather than on invented weather."
+            "no days and a note saying so. For uncovered dates, ask the user to confirm "
+            "planning with typical seasonal weather; proceed only after confirmation and "
+            "label it as assumed, not forecast."
         ),
         "parameters": {
             "type": "object",
@@ -244,8 +245,9 @@ def _clamp_range(start: date, end: date, today: date) -> _Window:
             None,
             note=(
                 f"no forecast yet: {start.isoformat()} is beyond the {FORECAST_DAYS}-day "
-                f"window, which ends {horizon.isoformat()}. Plan on seasonal norms for "
-                "this destination and say so rather than stating a forecast."
+                f"window, which ends {horizon.isoformat()}. Ask whether to continue using "
+                "seasonal norms; only after confirmation, plan with these "
+                "assumptions and label them as assumed, not forecast."
             ),
         )
 
@@ -259,8 +261,9 @@ def _clamp_range(start: date, end: date, today: date) -> _Window:
         # Said explicitly: a partial answer is the one most likely to be read as a whole.
         note = (
             f"forecast covers {clamped_start.isoformat()} to {clamped_end.isoformat()} only; "
-            f"later days of the trip are beyond the {FORECAST_DAYS}-day window, so use "
-            "seasonal norms for those."
+            f"later days of the trip are beyond the {FORECAST_DAYS}-day window. Ask whether "
+            "to continue using seasonal norms for uncovered dates; only after "
+            "confirmation, use these assumptions and label them as assumed, not forecast."
         )
     return _Window(clamped_start, clamped_end, note=note)
 

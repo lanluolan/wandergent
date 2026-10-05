@@ -18,6 +18,34 @@ from scripts.inspect_trace import summarize
 from tests.fakes import ITINERARY_JSON, FakeLLM, completion, tool_call
 
 
+async def test_web_research_is_identified_in_planner_traces(monkeypatch):
+    from app.tools.web_search import WebResearch
+
+    traces = []
+
+    async def capture(trace):
+        traces.append(trace)
+
+    async def search(query, **kwargs):
+        return WebResearch(ok=False, query=query, code="not_configured")
+
+    monkeypatch.setattr(telemetry, "export_trace", capture)
+    monkeypatch.setitem(TOOL_FUNCTIONS, "search_web", search)
+    await plan_trip(
+        "Chicago",
+        client=FakeLLM(
+            [
+                completion(tool_calls=[tool_call("search_web", {"query": "SECRET query"})]),
+                completion(content=ITINERARY_JSON),
+            ]
+        ),
+        model="test-model",
+    )
+    research = next(s for s in traces[0].spans if s.name == "tool.search_web")
+    assert research.attributes["gen_ai.tool.name"] == "search_web"
+    assert "SECRET" not in json.dumps(traces[0].payload())
+
+
 async def test_invalid_repair_output_is_a_distinct_failure_without_content(monkeypatch):
     traces = []
 

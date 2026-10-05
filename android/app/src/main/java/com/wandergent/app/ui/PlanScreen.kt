@@ -22,6 +22,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
@@ -104,8 +105,10 @@ fun PlanScreen(
     }
 
     val send = {
-        viewModel.send(draft)
-        draft = ""
+        if (!busy && draft.isNotBlank()) {
+            viewModel.send(draft)
+            draft = ""
+        }
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -123,6 +126,10 @@ fun PlanScreen(
                         exchange = exchange,
                         onSave = { viewModel.save(exchange.id) },
                         onRetry = { viewModel.retry(exchange.id) },
+                        retryEnabled = !busy,
+                        onClarificationReply = if (exchange.id == transcript.last().id && !busy) {
+                            { reply -> viewModel.send(reply) }
+                        } else null,
                     )
                 }
             }
@@ -137,6 +144,7 @@ fun PlanScreen(
             showRevisionHint = transcript.any { it.state is TurnState.Loaded },
             onSend = send,
             onNewConversation = viewModel::startNewConversation,
+            onCancel = viewModel::cancel,
         )
     }
 }
@@ -146,12 +154,23 @@ private fun LazyListScope.exchangeItems(
     exchange: Exchange,
     onSave: () -> Unit,
     onRetry: () -> Unit,
+    retryEnabled: Boolean,
+    onClarificationReply: ((String) -> Unit)? = null,
 ) {
     item(key = "ask-${exchange.id}") { UserBubble(exchange.request) }
 
     when (val state = exchange.state) {
         is TurnState.Running -> item(key = "run-${exchange.id}") { ProgressBubble(state.progress) }
-        is TurnState.Error -> item(key = "err-${exchange.id}") { ErrorBubble(state, onRetry) }
+        is TurnState.Error -> item(key = "err-${exchange.id}") { ErrorBubble(state, onRetry, retryEnabled) }
+        TurnState.Cancelled -> item(key = "cancelled-${exchange.id}") {
+            AgentBubble {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Generation stopped", style = MaterialTheme.typography.titleSmall)
+                    Text("Retry this request or edit your next message.", style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = onRetry, enabled = retryEnabled) { Text("Retry") }
+                }
+            }
+        }
         is TurnState.Loaded -> {
             // A revision is a full itinerary again, so without a label an edit reads as
             // a different trip.
@@ -163,6 +182,7 @@ private fun LazyListScope.exchangeItems(
                 response = state.response,
                 saved = exchange.saved,
                 onSave = onSave,
+                onClarificationReply = onClarificationReply,
             )
         }
     }
@@ -263,16 +283,24 @@ private fun ProgressBubble(progress: LiveProgress) {
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
-                maxLines = 1,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 20.dp),
             )
+            if (progress.tools.isNotEmpty()) {
+                val finished = progress.tools.count { it.ok != null }
+                Text(
+                    "$finished of ${progress.tools.size} checks finished",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ErrorBubble(state: TurnState.Error, onRetry: () -> Unit) {
+private fun ErrorBubble(state: TurnState.Error, onRetry: () -> Unit, retryEnabled: Boolean) {
     AgentBubble(
         color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -289,7 +317,7 @@ private fun ErrorBubble(state: TurnState.Error, onRetry: () -> Unit) {
             // Only retryable failures get a button: a misconfigured server (HTTP 500)
             // fails identically however many times it is tapped.
             if (state.retryable) {
-                TextButton(onClick = onRetry, contentPadding = PaddingValues(0.dp)) {
+                TextButton(onClick = onRetry, enabled = retryEnabled, contentPadding = PaddingValues(0.dp)) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Retry")
@@ -331,6 +359,7 @@ private fun Composer(
     showRevisionHint: Boolean,
     onSend: () -> Unit,
     onNewConversation: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     // Page colour, not a tinted slab: `tonalElevation` here and on the navigation bar put
     // three competing bands across the bottom. One continuous surface, one hairline, and
@@ -376,7 +405,6 @@ private fun Composer(
                     BasicTextField(
                         value = draft,
                         onValueChange = onDraftChange,
-                        enabled = !busy,
                         maxLines = 5,
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             color = MaterialTheme.colorScheme.onSurface,
@@ -390,17 +418,13 @@ private fun Composer(
                     )
                 }
                 FilledIconButton(
-                    onClick = onSend,
-                    enabled = !busy && draft.isNotBlank(),
+                    onClick = if (busy) onCancel else onSend,
+                    enabled = busy || draft.isNotBlank(),
                     modifier = Modifier.size(48.dp),
                     shape = CircleShape,
                 ) {
                     if (busy) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Icon(Icons.Default.Close, contentDescription = "Stop generation")
                     } else {
                         Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Send")
                     }

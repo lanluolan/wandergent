@@ -246,7 +246,7 @@ from app.tools.maps import Place, PlacesResult  # noqa: E402
 from app.tools.registry import TOOL_FUNCTIONS  # noqa: E402
 from tests.fakes import FakeLLM, completion, tool_call  # noqa: E402
 
-TODAY = date(2026, 8, 5)
+TODAY = date(2026, 9, 1)  # Keep opening-hours cases inside the forecast window.
 
 
 @pytest.fixture

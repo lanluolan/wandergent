@@ -59,6 +59,8 @@ import com.wandergent.app.data.ValidationReport
 import com.wandergent.app.data.formatMoney
 import com.wandergent.app.data.violationLabel
 import com.wandergent.app.data.warningText
+import com.wandergent.app.data.activityTimeLabel
+import com.wandergent.app.data.timingLines
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -76,11 +78,28 @@ internal fun LazyListScope.planItems(
     response: PlanResponse,
     saved: Boolean,
     onSave: () -> Unit,
+    onClarificationReply: ((String) -> Unit)? = null,
 ) {
     val itinerary = response.itinerary
 
     if (itinerary != null) {
         item(key = "$key-summary") { SummaryCard(itinerary) }
+        itinerary.travelGuide?.let { guide ->
+            if (guide.tripSummary.isNotBlank()) {
+                item(key = "$key-guide-summary") {
+                    NotesCard(listOf(guide.tripSummary), title = "Trip overview")
+                }
+            }
+            if (guide.assumptions.isNotEmpty()) {
+                item(key = "$key-guide-assumptions") { NotesCard(guide.assumptions, title = "Assumptions") }
+            }
+        }
+        itinerary.timing?.let { timing ->
+            val lines = timingLines(timing)
+            if (lines.isNotEmpty()) {
+                item(key = "$key-timing") { NotesCard(lines, title = "Travel times") }
+            }
+        }
         // Nothing to show when the plan passed cleanly -- that is the normal case.
         response.validation?.let { report ->
             if (!report.ok || report.advisory.isNotEmpty()) {
@@ -92,9 +111,42 @@ internal fun LazyListScope.planItems(
         itemsIndexed(itinerary.days, key = { index, _ -> "$key-day-$index" }) { index, day ->
             DayTimelineCard(day, itinerary.currency, dayNumber = index + 1,
                 evidence = response.activityEvidence.filter { it.dayIndex == index })
+            if (day.fallbackOptions.isNotEmpty()) {
+                NotesCard(day.fallbackOptions, title = "Backup options")
+            }
+        }
+        itinerary.travelGuide?.let { guide ->
+            val sections = listOf(
+                "Budget breakdown" to guide.budgetNotes,
+                "Tickets and reservations" to guide.ticketNotes,
+                "Transportation costs" to guide.transportationNotes,
+                "Food and restaurants" to guide.foodNotes,
+                "Free and paid stops" to guide.freePaidNotes,
+                "Packing checklist" to guide.packingChecklist,
+                "Practical advice" to guide.practicalCautions,
+                "Booking and preparation" to guide.preparationTimeline,
+                "Plan review" to guide.reviewNotes,
+                "Research sources" to guide.sourceUrls,
+            )
+            sections.forEachIndexed { index, (title, lines) ->
+                if (lines.isNotEmpty()) {
+                    item(key = "$key-guide-$index") { NotesCard(lines, title = title) }
+                }
+            }
         }
         if (itinerary.notes.isNotEmpty()) {
             item(key = "$key-notes") { NotesCard(itinerary.notes) }
+        }
+    } else if (response.clarification != null) {
+        item(key = "$key-clarification") { NotesCard(response.clarification.questions) }
+        if (response.clarification.reason == "weather" && onClarificationReply != null) {
+            val chinese = response.clarification.questions.any { question ->
+                question.any { it in '\u4e00'..'\u9fff' }
+            }
+            val reply = if (chinese) "按季节天气继续" else "Continue with seasonal weather"
+            item(key = "$key-confirm-weather") {
+                FilledTonalButton(onClick = { onClarificationReply(reply) }) { Text(reply) }
+            }
         }
     } else {
         // A 200 with no itinerary: the model could not produce a valid plan.
@@ -458,7 +510,8 @@ private fun TimelineRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    "${activity.startTime} – ${activity.endTime}",
+                    activityTimeLabel(activity),
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -511,13 +564,9 @@ private fun TimelineRow(
                 )
             }
 
-            // Dishes to order, exhibits worth the queue. Often empty.
-            activity.highlights.forEach { highlight ->
-                Text(
-                    "· $highlight",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+            activity.placeSummary?.takeIf { it.source == "editorialSummary" }?.let { summary ->
+                Text(summary.text, style = MaterialTheme.typography.bodyMedium)
+                Text("Google Maps", style = MaterialTheme.typography.labelSmall)
             }
             activity.notes?.let {
                 Text(
@@ -581,10 +630,10 @@ private fun categoryLabel(category: String): String = when (category) {
 }
 
 @Composable
-internal fun NotesCard(notes: List<String>) {
+internal fun NotesCard(notes: List<String>, title: String = "Trip notes") {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Trip notes", style = MaterialTheme.typography.titleSmall)
+            Text(title, style = MaterialTheme.typography.titleSmall)
             notes.forEach { Text("· $it", style = MaterialTheme.typography.bodySmall) }
         }
     }

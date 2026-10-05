@@ -70,7 +70,14 @@ async def test_emit_plan_is_in_repair_context_exactly_once() -> None:
     result = await plan_trip("1 day in Los Angeles, budget 1000 USD", client=llm)
     messages = llm.requests[-1]["messages"]
     assert sum(m.get("content") == invalid for m in messages) == 1
-    assert messages[-2]["role"] == "assistant" and messages[-2]["content"] == invalid
+    # A mandatory weather lookup may follow the draft; it must not duplicate or
+    # replace the last complete assistant candidate in the repair context.
+    candidate = next(
+        message
+        for message in reversed(messages)
+        if message["role"] == "assistant" and message.get("content")
+    )
+    assert candidate["content"] == invalid
     assert result.validation.ok
     assert result.constraints.budget == 1000
 

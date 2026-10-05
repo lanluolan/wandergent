@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/ZawYePhyo/travel-planner-skill",
+  "ref": "main",
+  "retrieved_on": "2026-10-05",
+  "license": "MIT",
+  "note": "Vendored source snapshot; upstream commit was unavailable. Wanderlog execution is disabled in Wandergent.",
+  "sha256": {
+    "references/itinerary-style.md": "7c62e0aeae22752857a5e7dedfd302b9c9e96d9f90fe6c70f68debe230110cc8",
+    "references/output-template.md": "1a9dbe9617d5ba112462bbf036b75aee45540182d53c970f974655c827f6d163",
+    "references/planning-criteria.md": "4951e4ee1bc968bb5e3a06b683a97a32e5b02977797220cdea196fa948438cde",
+    "references/travel-guidelines.md": "2cf64c0e6cd33939a2763cb96a751acaf42a3015713cc15992eb4bd5b5ff5b12",
+    "references/wanderlog-workflow.md": "b34368c1adaa986bb455b93fc58f20d8c8f7e01abb9764ca4af8142cbb3af73e",
+    "SKILL.md": "af03f84dfb17e96c6c870207d67a57dbe559dbc2b4941214ee57c91a98d80dfa",
+    "LICENSE": "ab04cf7521b7e04b51f7b6e3aa91d17c7ac425c6a3d02e1526cf9041ea459a21"
+  }
+}

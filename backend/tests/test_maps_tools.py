@@ -398,7 +398,7 @@ async def test_a_place_with_no_published_hours_is_still_usable() -> None:
 
 from datetime import UTC, datetime, timedelta  # noqa: E402
 
-from app.tools.maps import TRANSIT_REFERENCE_HOUR_UTC, _departure_iso, _route_body  # noqa: E402
+from app.tools.maps import _departure_iso, _route_body  # noqa: E402
 
 
 def test_a_caller_supplied_departure_is_the_one_used() -> None:
@@ -406,14 +406,11 @@ def test_a_caller_supplied_departure_is_the_one_used() -> None:
     assert _departure_iso(wanted).startswith(wanted.strftime("%Y-%m-%dT%H:%M"))
 
 
-def test_a_past_departure_falls_back_instead_of_being_sent() -> None:
-    """The Routes API errors on a past time for driving and returns nothing for transit,
-    which would read as an unroutable pair rather than as the bad input it is."""
+def test_an_explicit_past_departure_is_never_replaced_with_another_date() -> None:
     stale = datetime.now(UTC) - timedelta(days=1)
     used = datetime.fromisoformat(_departure_iso(stale).replace("Z", "+00:00"))
 
-    assert used > datetime.now(UTC)
-    assert used.hour == TRANSIT_REFERENCE_HOUR_UTC
+    assert used == stale
 
 
 def test_a_naive_departure_is_read_as_utc_not_rejected() -> None:

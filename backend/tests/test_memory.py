@@ -180,7 +180,7 @@ async def test_tools_that_do_not_want_context_do_not_get_it(monkeypatch) -> None
 # --- the loop ----------------------------------------------------------------------
 
 
-async def test_known_preferences_reach_the_system_prompt(store) -> None:
+async def test_stateless_planner_does_not_recall_saved_preferences(store) -> None:
     await store.remember("alice", ["avoids hiking"])
     llm = FakeLLM([completion(content=ITINERARY_JSON)])
 
@@ -195,8 +195,9 @@ async def test_known_preferences_reach_the_system_prompt(store) -> None:
         pass
 
     system_prompt = llm.requests[0]["messages"][0]["content"]
-    assert "avoids hiking" in system_prompt
-    assert "You already know this traveller" in system_prompt
+    assert "avoids hiking" not in system_prompt
+    assert "You already know this traveller" not in system_prompt
+    assert [p.text for p in await store.recall("alice")] == ["avoids hiking"]
 
 
 async def test_an_anonymous_run_reads_no_memory(store) -> None:
@@ -211,14 +212,7 @@ async def test_an_anonymous_run_reads_no_memory(store) -> None:
     assert "avoids hiking" not in llm.requests[0]["messages"][0]["content"]
 
 
-async def test_the_agent_can_write_memory_mid_run(store, monkeypatch) -> None:
-    """The whole point: remembering rides the existing tool loop, no extra LLM call."""
-
-    async def bound(preferences, *, context=None, **kwargs):
-        return await remember_preference(preferences, context=context, store=store)
-
-    monkeypatch.setitem(TOOL_FUNCTIONS, "remember_preference", bound)
-
+async def test_stateless_planner_rejects_memory_writes(store) -> None:
     llm = FakeLLM(
         [
             completion(
@@ -240,7 +234,11 @@ async def test_the_agent_can_write_memory_mid_run(store, monkeypatch) -> None:
         )
     ]
 
-    assert [p.text for p in await store.recall("alice")] == ["avoids hiking"]
-    # It shows up as an ordinary tool call, so the client already renders it.
-    assert any(e.type == "tool_call" and e.name == "remember_preference" for e in events)
+    assert await store.recall("alice") == []
+    memory_calls = [r for r in events[-1].result.tool_calls if r.name == "remember_preference"]
+    assert len(memory_calls) == 1
+    assert not memory_calls[0].ok
+    assert memory_calls[0].code == "unknown_tool"
+    advertised = [s["function"]["name"] for s in llm.requests[0]["tools"]]
+    assert "remember_preference" not in advertised
     assert events[-1].result.itinerary is not None

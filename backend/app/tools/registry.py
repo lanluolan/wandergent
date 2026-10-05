@@ -3,15 +3,13 @@
 Schemas and callables are registered as pairs and the dispatch name is read out of
 the schema, so a rename cannot leave the two halves pointing at different things.
 
-**Request context is injected, never taken from the model.** A tool that needs to know
-*who* is asking receives a `context` keyword from the caller. Putting the user id in the
-tool schema instead would let a model name whose memory it writes to.
+Research dispatch uses MCP; account identity stays in the host. Local execution is
+available for isolated service tests with injected HTTP clients.
 """
 
 import asyncio
 import inspect
 import json
-import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -29,10 +27,9 @@ from app.tools.maps import (
     get_travel_time,
     search_places,
 )
-from app.tools.memory import REMEMBER_TOOL_SCHEMA, remember_preference
+from app.tools.mcp_client import call_mcp_tool
 from app.tools.weather import WEATHER_TOOL_SCHEMA, get_weather_forecast
-
-logger = logging.getLogger(__name__)
+from app.tools.web_search import WEB_SEARCH_TOOL_SCHEMA, search_web
 
 ToolFn = Callable[..., Awaitable[ToolOutcome]]
 
@@ -40,12 +37,11 @@ _REGISTERED: tuple[tuple[dict, ToolFn], ...] = (
     (WEATHER_TOOL_SCHEMA, get_weather_forecast),
     (PLACES_TOOL_SCHEMA, search_places),
     (TRAVEL_TOOL_SCHEMA, get_travel_time),
-    (REMEMBER_TOOL_SCHEMA, remember_preference),
+    (WEB_SEARCH_TOOL_SCHEMA, search_web),
 )
 
 TOOL_SCHEMAS: list[dict] = [schema for schema, _ in _REGISTERED]
 TOOL_FUNCTIONS: dict[str, ToolFn] = {schema["function"]["name"]: fn for schema, fn in _REGISTERED}
-_HTTP_TOOL_FUNCTIONS = {get_weather_forecast, search_places, get_travel_time}
 
 # Tool-loop policy lives beside registration, so adding a tool requires an explicit
 # decision about staleness, fan-out and retry rather than inheriting an unsafe default.
@@ -53,17 +49,17 @@ SHARED_CACHE_TTLS: dict[str, float] = {
     "get_weather_forecast": 15 * 60,
     "search_places": 6 * 60 * 60,
     "get_travel_time": 5 * 60,
-    # remember_preference is a write and is deliberately absent.
+    "search_web": 5 * 60,
 }
 TOOL_CONCURRENCY_LIMITS: dict[str, int] = {
     "get_weather_forecast": 2,
     "search_places": 4,
     "get_travel_time": 4,
-    "remember_preference": 1,
+    "search_web": 1,
 }
 MAX_PARALLEL_TOOLS = 6
 RETRYABLE_CODES = {"timed_out", "unavailable"}
-RETRYABLE_TOOLS = {"get_weather_forecast", "search_places", "get_travel_time"}
+RETRYABLE_TOOLS = {"get_weather_forecast", "search_places", "get_travel_time", "search_web"}
 MAX_TOOL_ATTEMPTS = 2
 
 _LIMITERS_BY_LOOP: WeakKeyDictionary = WeakKeyDictionary()
@@ -127,11 +123,6 @@ def shared_cache_ttl(name: str) -> float:
     return SHARED_CACHE_TTLS.get(name, 0)
 
 
-def uses_shared_http_client(name: str) -> bool:
-    """Whether the currently registered implementation is one of our HTTP readers."""
-    return TOOL_FUNCTIONS.get(name) in _HTTP_TOOL_FUNCTIONS
-
-
 def tool_priority(name: str, arguments: dict[str, Any], *, repeated: bool = False) -> int:
     """Value of a requested fact when a round asks for more than remains.
 
@@ -142,8 +133,8 @@ def tool_priority(name: str, arguments: dict[str, Any], *, repeated: bool = Fals
         return 0
     if name == "get_weather_forecast":
         return 100
-    if name == "remember_preference":
-        return 90
+    if name == "search_web":
+        return 60
     if name == "search_places":
         return 30 if arguments.get("purpose") == "optional" else 80
     if name == "get_travel_time":
@@ -183,6 +174,29 @@ async def call_tool(
             ok=False, error=f"unknown tool {name!r}; available tools: {known}", code=UNKNOWN_TOOL
         )
 
+    outcome = ToolOutcome(ok=False, error=f"{name} was not attempted", code=UNAVAILABLE)
+    for attempt in range(1, MAX_TOOL_ATTEMPTS + 1):
+        try:
+            outcome = await call_mcp_tool(name, arguments, context)
+        except Exception:
+            outcome = ToolOutcome(ok=False, error="MCP research request failed", code=UNAVAILABLE)
+        outcome = outcome.model_copy(update={"attempts": attempt})
+        if (
+            outcome.ok
+            or name not in RETRYABLE_TOOLS
+            or outcome.code not in RETRYABLE_CODES
+            or attempt >= MAX_TOOL_ATTEMPTS
+        ):
+            return outcome
+    return outcome
+
+
+async def execute_local_tool(
+    name: str, arguments: dict, context: dict | None = None
+) -> ToolOutcome:
+    fn = TOOL_FUNCTIONS.get(name)
+    if fn is None:
+        return ToolOutcome(ok=False, error="Unknown tool", code=UNKNOWN_TOOL)
     call_kwargs = dict(arguments)
     if _accepts_keyword(fn, "context"):
         call_kwargs["context"] = context or {}
@@ -193,28 +207,9 @@ async def call_tool(
         # concurrently over a shared client.
         call_kwargs["client"] = http_client
 
-    outcome = ToolOutcome(ok=False, error=f"{name} was not attempted", code=UNAVAILABLE)
-    for attempt in range(1, MAX_TOOL_ATTEMPTS + 1):
-        try:
-            outcome = await fn(**call_kwargs)
-        except TypeError as exc:
-            outcome = ToolOutcome(
-                ok=False, error=f"bad arguments for {name}: {exc}", code=BAD_REQUEST
-            )
-        except Exception as exc:  # noqa: BLE001 - deliberate boundary, see docstring
-            # Tools promise not to raise, but this is the seam between model-chosen input
-            # and our code: one misbehaving tool must not take the request down.
-            logger.exception("tool %s raised unexpectedly", name)
-            outcome = ToolOutcome(
-                ok=False, error=f"{name} failed unexpectedly: {exc}", code=UNAVAILABLE
-            )
-        outcome = outcome.model_copy(update={"attempts": attempt})
-        if (
-            outcome.ok
-            or name not in RETRYABLE_TOOLS
-            or outcome.code not in RETRYABLE_CODES
-            or attempt >= MAX_TOOL_ATTEMPTS
-        ):
-            return outcome
-        logger.info("retrying tool %s after %s (attempt %s)", name, outcome.code, attempt)
-    return outcome
+    try:
+        return await fn(**call_kwargs)
+    except TypeError as exc:
+        return ToolOutcome(ok=False, error=f"bad arguments for {name}: {exc}", code=BAD_REQUEST)
+    except Exception:
+        return ToolOutcome(ok=False, error=f"{name} failed unexpectedly", code=UNAVAILABLE)

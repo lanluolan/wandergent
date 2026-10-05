@@ -55,11 +55,20 @@ def test_a_venue_with_no_hours_says_so_rather_than_going_quiet() -> None:
     assert "hours not published" in block
 
 
-def test_the_price_band_rides_along_when_there_is_one() -> None:
-    block = render({}, {}, {"Alinea": "PRICE_LEVEL_VERY_EXPENSIVE"})
+def test_restaurant_midpoint_rides_along_when_there_is_one() -> None:
+    block = render(
+        {},
+        {},
+        {
+            "Alinea": {
+                "start_price": {"currency": "USD", "amount": 100},
+                "end_price": {"currency": "USD", "amount": 200},
+            }
+        },
+    )
 
     assert block is not None
-    assert "very expensive" in block
+    assert "per-person estimate 150.00 USD" in block
 
 
 def test_the_brief_carries_the_distances_too() -> None:

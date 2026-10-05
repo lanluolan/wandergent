@@ -10,10 +10,20 @@ activities, so it cannot claim a plan fits the budget by mis-adding.
 
 import json
 import re
-from datetime import date
+from datetime import UTC, date
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+
+from app.agent.timing import TimingContext
+from app.tools.place_summary import PlaceSummary
 
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -46,7 +56,7 @@ class Activity(BaseModel):
         description=f"One of: {', '.join(ACTIVITY_CATEGORIES)}.",
     )
     location: str | None = Field(default=None, description="Place name or address.")
-    travel_mode: Literal["WALK", "TRANSIT", "DRIVE"] | None = Field(
+    travel_mode: Literal["WALK", "TRANSIT", "DRIVE", "FLIGHT", "TRAIN"] | None = Field(
         default=None, description="For transport activities, the actual mode of this leg."
     )
     indoor: bool | None = Field(
@@ -56,20 +66,41 @@ class Activity(BaseModel):
     estimated_cost: float = Field(
         default=0.0, ge=0, description="Estimated cost for the whole party, in the trip currency."
     )
+    transport_base_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "DRIVE fuel/rental estimate for the whole party, excluding tolls, in trip currency."
+        ),
+    )
     highlights: list[str] = Field(
         default_factory=list,
-        description=(
-            "2-4 concrete specifics: signature dishes at a restaurant, the exhibits worth "
-            "the queue at a museum, the room type at a hotel. Named things, not adjectives."
-        ),
+        description="Legacy field; return an empty list. Venue summaries are attached server-side.",
+    )
+    place_summary: PlaceSummary | None = Field(
+        default=None,
+        description="Server-provided Google editorial summary. Return null; never rewrite it.",
     )
     notes: str | None = Field(
         default=None,
         description=(
             "Caveats only: booking needed, closed on Mondays, cash only. "
-            "Recommendations belong in highlights, not here."
+            "Do not add unsupported dish or exhibit recommendations here."
         ),
     )
+    start_at: AwareDatetime | None = Field(
+        default=None,
+        description="Full local start timestamp with UTC offset; required for timed trips.",
+    )
+    end_at: AwareDatetime | None = Field(
+        default=None,
+        description="Full local end timestamp with UTC offset, including arrival date.",
+    )
+    journey_id: str | None = Field(
+        default=None, description="Request-owned long-distance journey ID."
+    )
+    hotel_stay_id: str | None = Field(default=None, description="Request-owned hotel stay ID.")
+    lodging_action: Literal["check_in", "check_out", "stay"] | None = None
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -84,6 +115,26 @@ class Activity(BaseModel):
 
     @model_validator(mode="after")
     def _end_after_start(self) -> "Activity":
+        if (self.start_at is None) != (self.end_at is None):
+            raise ValueError("start_at and end_at must be supplied together")
+        if self.journey_id and self.category != "transport":
+            raise ValueError("journey_id requires a transport activity")
+        if (self.hotel_stay_id is None) != (self.lodging_action is None):
+            raise ValueError("hotel_stay_id and lodging_action must be supplied together")
+        if self.hotel_stay_id and self.category != "accommodation":
+            raise ValueError("hotel_stay_id requires an accommodation activity")
+        if self.journey_id or self.hotel_stay_id:
+            if self.start_at is None:
+                raise ValueError("journey and hotel activities require absolute timestamps")
+        if self.start_at is not None:
+            if (
+                self.start_at.strftime("%H:%M") != self.start_time
+                or self.end_at.strftime("%H:%M") != self.end_time
+            ):
+                raise ValueError("local clock labels must match their absolute timestamps")
+            if self.end_at.astimezone(UTC) <= self.start_at.astimezone(UTC):
+                raise ValueError("end_at must follow start_at in UTC")
+            return self
         if self.end_time <= self.start_time:
             raise ValueError(
                 f"end_time {self.end_time} must be after start_time {self.start_time} "
@@ -101,6 +152,7 @@ class DayPlan(BaseModel):
         default=None, description="Weather note for this day, from the weather tool."
     )
     activities: list[Activity] = Field(default_factory=list)
+    fallback_options: list[str] = Field(default_factory=list)
 
     @computed_field
     @property
@@ -109,10 +161,29 @@ class DayPlan(BaseModel):
         return round(sum(item.estimated_cost for item in self.activities), 2)
 
 
+class TravelGuide(BaseModel):
+    trip_summary: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+    budget_notes: list[str] = Field(default_factory=list)
+    ticket_notes: list[str] = Field(default_factory=list)
+    transportation_notes: list[str] = Field(default_factory=list)
+    food_notes: list[str] = Field(default_factory=list)
+    free_paid_notes: list[str] = Field(default_factory=list)
+    packing_checklist: list[str] = Field(default_factory=list)
+    practical_cautions: list[str] = Field(default_factory=list)
+    preparation_timeline: list[str] = Field(default_factory=list)
+    review_notes: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
+
+
 class Itinerary(BaseModel):
     """A complete trip plan."""
 
     destination: str
+    travel_guide: TravelGuide | None = None
+    timing: TimingContext | None = Field(
+        default=None, description="Server-owned travel timing context; return null."
+    )
     start_date: date
     end_date: date
     travelers: int = Field(default=1, ge=1)
@@ -183,3 +254,21 @@ def itinerary_schema_json() -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def strict_output_schema(model: type[BaseModel]) -> dict:
+    schema = _prune(model.model_json_schema())
+
+    def require_fields(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                node["required"] = list(node.get("properties", {}))
+                node["additionalProperties"] = False
+            for value in node.values():
+                require_fields(value)
+        elif isinstance(node, list):
+            for value in node:
+                require_fields(value)
+
+    require_fields(schema)
+    return schema

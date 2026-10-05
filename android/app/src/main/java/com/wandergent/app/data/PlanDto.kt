@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.OffsetDateTime
 
 /**
  * Wire types for `POST /plan`, mirroring the contract in `docs/api.md`.
@@ -24,8 +25,6 @@ import kotlinx.serialization.json.put
 @Serializable
 data class PlanRequest(
     val message: String,
-    // No user id. Whose preferences the run recalls and updates comes from the bearer
-    // token the interceptor attaches; a request with no token is simply anonymous.
     /**
      * ISO 4217 code the traveller settles up in. The backend *estimates* in it rather
      * than converting into it. Empty lets the backend use the destination's local
@@ -41,10 +40,27 @@ data class PlanRequest(
     val previous: Itinerary? = null,
     @SerialName("previous_constraints") val previousConstraints: TripConstraints? = null,
     val constraints: TripConstraints? = null,
+    val continuation: PlanContinuation? = null,
+    @SerialName("weather_fallback_confirmed") val weatherFallbackConfirmed: Boolean = false,
+)
+
+@Serializable
+data class PlanContinuation(
+    val request: String,
+    val questions: List<String>,
+    @SerialName("weather_dates") val weatherDates: List<String> = emptyList(),
+)
+
+@Serializable
+data class Clarification(
+    val questions: List<String>,
+    val reason: String = "inputs",
 )
 
 @Serializable
 data class PlanResponse(
+    val clarification: Clarification? = null,
+    val continuation: PlanContinuation? = null,
     @SerialName("run_id") val runId: String? = null,
     @SerialName("trace_id") val traceId: String? = null,
     @SerialName("activity_evidence") val activityEvidence: List<ActivityEvidence> = emptyList(),
@@ -113,7 +129,7 @@ data class ValidationReport(val violations: List<Violation> = emptyList()) {
 }
 
 /** Mirrors `ADVISORY_CODES` in `app/agent/validation.py`; the code is the stable contract. */
-private val ADVISORY_CODES = setOf("overlong_day", "unsociable_hours", "transfer_unverified")
+private val ADVISORY_CODES = setOf("overlong_day", "unsociable_hours", "transfer_unverified", "journey_time_estimated")
 
 @Serializable
 data class Violation(
@@ -136,7 +152,25 @@ data class Itinerary(
     val budget: Double? = null,
     val days: List<DayPlan> = emptyList(),
     val notes: List<String> = emptyList(),
+    val timing: TimingContext? = null,
     @SerialName("total_estimated_cost") val totalEstimatedCost: Double = 0.0,
+    @SerialName("travel_guide") val travelGuide: TravelGuide? = null,
+)
+
+@Serializable
+data class TravelGuide(
+    @SerialName("trip_summary") val tripSummary: String = "",
+    val assumptions: List<String> = emptyList(),
+    @SerialName("budget_notes") val budgetNotes: List<String> = emptyList(),
+    @SerialName("ticket_notes") val ticketNotes: List<String> = emptyList(),
+    @SerialName("transportation_notes") val transportationNotes: List<String> = emptyList(),
+    @SerialName("food_notes") val foodNotes: List<String> = emptyList(),
+    @SerialName("free_paid_notes") val freePaidNotes: List<String> = emptyList(),
+    @SerialName("packing_checklist") val packingChecklist: List<String> = emptyList(),
+    @SerialName("practical_cautions") val practicalCautions: List<String> = emptyList(),
+    @SerialName("preparation_timeline") val preparationTimeline: List<String> = emptyList(),
+    @SerialName("review_notes") val reviewNotes: List<String> = emptyList(),
+    @SerialName("source_urls") val sourceUrls: List<String> = emptyList(),
 )
 
 @Serializable
@@ -146,6 +180,7 @@ data class DayPlan(
     val weather: String? = null,
     val activities: List<Activity> = emptyList(),
     @SerialName("estimated_cost") val estimatedCost: Double = 0.0,
+    @SerialName("fallback_options") val fallbackOptions: List<String> = emptyList(),
 )
 
 @Serializable
@@ -158,9 +193,24 @@ data class Activity(
     @SerialName("travel_mode") val travelMode: String? = null,
     val indoor: Boolean? = null,
     @SerialName("estimated_cost") val estimatedCost: Double = 0.0,
-    /** Dishes to order, exhibits worth the queue, what to book ahead. Often empty. */
+    @SerialName("transport_base_cost") val transportBaseCost: Double? = null,
+    @SerialName("place_summary") val placeSummary: PlaceSummary? = null,
+    /** Kept for decoding older saved plans. */
     val highlights: List<String> = emptyList(),
     val notes: String? = null,
+    @SerialName("start_at") val startAt: String? = null,
+    @SerialName("end_at") val endAt: String? = null,
+    @SerialName("journey_id") val journeyId: String? = null,
+    @SerialName("hotel_stay_id") val hotelStayId: String? = null,
+    @SerialName("lodging_action") val lodgingAction: String? = null,
+)
+
+@Serializable
+data class PlaceSummary(
+    val text: String,
+    val source: String? = null,
+    @SerialName("language_code") val languageCode: String? = null,
+    @SerialName("collected_at") val collectedAt: String? = null,
 )
 
 /**
@@ -192,7 +242,7 @@ data class ActivityEvidence(
     @SerialName("collected_at") val collectedAt: String? = null,
     @SerialName("venue_verified") val venueVerified: Boolean = false,
     @SerialName("hours_available") val hoursAvailable: Boolean = false,
-    @SerialName("price_level_available") val priceLevelAvailable: Boolean = false,
+    @SerialName("price_range_available") val priceRangeAvailable: Boolean = false,
     @SerialName("price_confidence") val priceConfidence: String = "estimate",
     @SerialName("recheck_before_departure") val recheckBeforeDeparture: Boolean = true,
     @SerialName("route_source") val routeSource: String? = null,
@@ -233,4 +283,71 @@ data class TripConstraints(
     val travelers: Int? = null,
     @SerialName("allowed_modes") val allowedModes: List<String>? = null,
     @SerialName("lodging_arranged") val lodgingArranged: Boolean? = null,
+    @SerialName("weather_fallback_dates") val weatherFallbackDates: List<String>? = null,
+    val arrival: Arrival? = null,
+    @SerialName("hotel_stays") val hotelStays: List<HotelStay>? = null,
+    val journeys: List<Journey>? = null,
 )
+
+@Serializable
+data class TimingContext(
+    val arrival: Arrival? = null,
+    @SerialName("hotel_stays") val hotelStays: List<HotelStay>? = null,
+    val journeys: List<Journey>? = null,
+)
+
+@Serializable
+data class Arrival(
+    val at: String,
+    val location: String,
+    @SerialName("buffer_minutes") val bufferMinutes: Int = 60,
+)
+
+@Serializable
+data class HotelStay(
+    val id: String,
+    val hotel: String,
+    @SerialName("check_in") val checkIn: String,
+    @SerialName("check_out") val checkOut: String,
+    @SerialName("check_in_minutes") val checkInMinutes: Int = 30,
+    @SerialName("check_out_minutes") val checkOutMinutes: Int = 15,
+)
+
+@Serializable
+data class Journey(
+    val id: String,
+    val origin: String,
+    val destination: String,
+    val mode: String,
+    val departure: String,
+    val arrival: String,
+    @SerialName("departure_buffer_minutes") val departureBufferMinutes: Int = 0,
+    @SerialName("arrival_buffer_minutes") val arrivalBufferMinutes: Int = 0,
+    @SerialName("timing_confidence") val timingConfidence: String = "estimate",
+)
+
+internal fun timestampLabel(value: String): String = runCatching {
+    val moment = OffsetDateTime.parse(value)
+    val offset = if (moment.offset.id == "Z") "UTC" else "UTC${moment.offset.id}"
+    "${moment.toLocalDate()} ${moment.toLocalTime()} $offset"
+}.getOrDefault(value)
+
+fun activityTimeLabel(activity: Activity): String =
+    if (activity.startAt != null && activity.endAt != null) {
+        "${timestampLabel(activity.startAt)} → ${timestampLabel(activity.endAt)}"
+    } else {
+        "${activity.startTime} – ${activity.endTime}"
+    }
+
+fun timingLines(timing: TimingContext): List<String> = buildList {
+    timing.arrival?.let {
+        add("Arrival at ${it.location}: ${timestampLabel(it.at)}; allow ${it.bufferMinutes} min before activities")
+    }
+    timing.hotelStays.orEmpty().forEach {
+        add("${it.hotel}: check-in from ${timestampLabel(it.checkIn)}, check-out by ${timestampLabel(it.checkOut)}")
+    }
+    timing.journeys.orEmpty().forEach {
+        val source = if (it.timingConfidence == "confirmed") "Times supplied as confirmed" else "Estimated times"
+        add("${it.origin} → ${it.destination}: ${timestampLabel(it.departure)} → ${timestampLabel(it.arrival)}. $source; allow ${it.departureBufferMinutes} min before and ${it.arrivalBufferMinutes} min after")
+    }
+}

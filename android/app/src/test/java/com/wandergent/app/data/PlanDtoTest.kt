@@ -16,6 +16,52 @@ import kotlin.test.assertTrue
  */
 class PlanDtoTest {
     @Test
+    fun `travel guide and fallback options survive saved and revised plan round trip`() {
+        val itinerary = json.decodeFromString<Itinerary>("""
+            {"destination":"Chicago","start_date":"2026-10-05","end_date":"2026-10-05",
+             "travel_guide":{"trip_summary":"Late starts","packing_checklist":["Raincoat"],
+               "preparation_timeline":["Book tickets"],"source_urls":["https://museum.example"]},
+             "days":[{"date":"2026-10-05","summary":"Museum",
+               "fallback_options":["Rest near the hotel"]}]}
+        """)
+        assertEquals(listOf("Raincoat"), itinerary.travelGuide?.packingChecklist)
+        assertEquals(listOf("Rest near the hotel"), itinerary.days.first().fallbackOptions)
+        val request = PlanRequest(message = "Change lunch", previous = itinerary)
+        val restored = json.decodeFromString<PlanRequest>(json.encodeToString(request))
+        assertEquals(itinerary, restored.previous)
+        assertEquals("Late starts", restored.previous?.travelGuide?.tripSummary)
+    }
+
+    @Test
+    fun `transport base cost survives itinerary revision round trip`() {
+        val activity = json.decodeFromString<Activity>("""
+            {"start_time":"10:00","end_time":"10:30","title":"Drive",
+             "category":"transport","travel_mode":"DRIVE",
+             "estimated_cost":14,"transport_base_cost":10}
+        """)
+        assertEquals(10.0, activity.transportBaseCost)
+        assertEquals(activity, json.decodeFromString<Activity>(json.encodeToString(activity)))
+    }
+
+    @Test
+    fun `clarification and weather consent survive request round trip`() {
+        val response = json.decodeFromString<PlanResponse>("""
+            {"itinerary":null,"clarification":{"questions":["Continue?"],"reason":"weather"},
+             "continuation":{"request":"Chicago","questions":["Continue?"],
+             "weather_dates":["2026-11-01"]}}
+        """)
+        assertNull(response.itinerary)
+        assertEquals("weather", response.clarification?.reason)
+        val request = PlanRequest(
+            message = "Yes", continuation = response.continuation, weatherFallbackConfirmed = true,
+        )
+        val restored = json.decodeFromString<PlanRequest>(json.encodeToString(request))
+        assertEquals(listOf("2026-11-01"), restored.continuation?.weatherDates)
+        assertTrue(restored.weatherFallbackConfirmed)
+        assertEquals(response, json.decodeFromString<PlanResponse>(json.encodeToString(response)))
+    }
+
+    @Test
     fun `user confirmed lodging survives revision request round trip`() {
         val response = json.decodeFromString<PlanResponse>(
             """{"constraints":{"lodging_arranged":true}}"""

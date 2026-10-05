@@ -1,18 +1,10 @@
-"""The tool the agent uses to remember something about the traveller.
-
-A tool rather than a separate extraction pass: the model is already reading the request,
-so noticing "I don't want to hike" costs nothing extra, and *what is worth remembering*
-becomes the agent's judgement rather than a regex or a second LLM call per request.
-
-`user_id` is **not** a tool argument. Identity comes from the request context, injected by
-the registry -- a model that can name whose memory it writes to can write into anyone's.
-"""
+"""Legacy preference-write helpers, excluded from the stateless planner and MCP tools."""
 
 import logging
 import re
 
 from app.memory import store as default_store
-from app.memory.store import Preference, PreferenceStore
+from app.memory.store import PreferenceStore
 from app.tools.base import BAD_REQUEST, ToolOutcome
 
 logger = logging.getLogger(__name__)
@@ -138,21 +130,4 @@ async def remember_preference(
         stored=stored,
         already_known=already,
         ignored_one_off=ignored,
-    )
-
-
-def recall_block(preferences: list[Preference]) -> str:
-    """Render known preferences for the system prompt."""
-    lines = "\n".join(
-        f"- [key={preference.key}] {preference.text}"
-        if preference.key
-        else f"- [legacy-unkeyed] {preference.text}"
-        for preference in preferences
-    )
-    return (
-        "You already know this traveller:\n"
-        f"{lines}\n"
-        "Apply what is relevant to this trip without being asked, and do not ask them to "
-        "repeat it. If the new request corrects an entry, call remember_preference with "
-        "the same key and the new canonical English text. The new request always wins."
     )

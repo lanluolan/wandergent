@@ -18,7 +18,7 @@ def test_venue_match_preserves_original_time_and_never_verifies_price():
                 {
                     "name": location,
                     "opening_hours": ["Monday: 09:00–17:00"],
-                    "price_level": "PRICE_LEVEL_MODERATE",
+                    "price_range": {"start_price": {"currency": "USD", "amount": 10}},
                 }
             ]
         },

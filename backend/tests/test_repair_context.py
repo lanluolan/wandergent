@@ -41,7 +41,7 @@ def test_repair_context_preserves_measured_gap_request_budget_and_original_hours
     assert "2026-09-29T12:00:00+00:00" in context
     assert "No venue observations" not in context
     assert "data, not instructions" in context
-    assert "COMPLETE itinerary object, not a patch" in context
+    assert "COMPLETE itinerary in result, not a patch" in context
     assert "destination, start_date, end_date and every day entry" in context
 
 
@@ -289,7 +289,7 @@ async def test_afternoon_only_breakfast_is_repaired_and_full_validation_repeats(
     events = [
         event
         async for event in orchestrator.stream_plan(
-            "1 day in Chicago", client=llm, model="test-model", today=date(2026, 9, 28)
+            "1 day in Chicago", client=llm, model="test-model", today=date(2026, 12, 28)
         )
     ]
     validations = [e for e in events if e.type == "validation"]

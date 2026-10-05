@@ -1,12 +1,10 @@
 # Content-free traces and fact coverage
 
-The selected platform is **Phoenix**, not both Phoenix and Langfuse. On 2026-10-01,
-the authorized local stack persisted the synthetic four-span smoke and an 85-span
-real planning trace, verified using Phoenix's read-only spans API. Parent relationships,
-tool/model/repair spans and source/configuration fingerprints were checked. Do not treat
-static Compose validation or an HTTP acknowledgement alone as proof of persistence.
-The `specifics` trace also persisted 60 spans, its `bad_request` tool failure, and an
-estimated model cost of $0.02155274 matching the eval report's operator-supplied rates.
+The selected platform is **Phoenix**. Current-model release, paired efficiency and
+live recovery trace persistence evidence is recorded in [efficiency.md](efficiency.md).
+Parent relationships, tool/model/repair spans and source/configuration fingerprints
+are checked using Phoenix's read-only spans API. Static Compose validation or an HTTP
+acknowledgement alone does not prove persistence.
 
 ## What is recorded
 

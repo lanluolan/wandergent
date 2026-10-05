@@ -40,6 +40,8 @@ No API key, so Phase 1 runs end to end without a signup step; resolves Chinese c
 
 ## 2026-08-05 · Portable JSON output over provider-specific structured outputs
 
+Superseded by strict Structured Outputs on 2026-10-04 (see below).
+
 - **Decision**: itinerary is plain JSON validated by Pydantic, with errors fed back for one repair round -- not OpenAI strict structured outputs.
 - **Why**: `OPENAI_BASE_URL` is configurable, and compatible endpoints often lack strict mode. Validate-and-repair works everywhere and also catches semantic errors a schema cannot express (an activity ending before it starts).
 - Costs are `computed_field`s derived from activities, so the model cannot make a plan look in-budget by mis-adding.
@@ -2057,10 +2059,6 @@ nothing read them, and Phase 4 will add what it actually needs.
 - Debug 0.1.2 was installed in place; the signed-in account, two saved trips and transcript survived.
   A local backup and diagnostic screenshots are under `android/app/build/ux-check/` (gitignored).
 - No planner prompt, tool dispatch or generation logic changed; no paid LLM eval was run.
-- OpenAI `gpt-5.6-luna` rejects `max_tokens` on Chat Completions and requires
-  `max_completion_tokens`. Its streamed function calls also require
-  `reasoning_effort="none"`; a 152-token probe confirmed the tool-call stream works with both.
-  `stream_turn` now sends these parameters and its offline regression test asserts them.
 
 ## Interactive map diagnosis (2026-09-27)
 
@@ -2095,16 +2093,6 @@ nothing read them, and Phase 4 will add what it actually needs.
   date, records source/suite hashes, saves after each case and can resume only an identical partial
   run. A mid-stream `httpx` read failure exposed a raw exception path; all LLM connect/read errors
   now cross the same stable `PlanningError` boundary without upstream text.
-- Same 9 case ids and 75 pass decisions, `gpt-5.6-luna`, Maps enabled: frozen pre-change app
-  **4/9 cases, 68/75 checks, 61 calls, 547,012 tokens, 830.9 s, $0.159989**; final app
-  **7/9, 72/75, 73 calls, 767,725 tokens, 986.9 s, $0.210615**. The price uses operator-supplied
-  base text rates and excludes Maps and long-context multipliers. Suite byte hashes differ because
-  failure rendering was changed to omit advisory noise; case ids, check count and pass semantics
-  did not change.
-- The final gate remains red by design. `beyond-forecast-horizon` kept three breakfasts outside
-  known hours after all repairs. `revision-sequence` began with a measured zero-gap transfer and
-  its first targeted edit changed an untouched day. These are the next correctness/context cases,
-  not reasons to weaken validators or select a luckier rerun.
 
 ## Deterministic revision scope and keyed durable memory (2026-09-29)
 
@@ -2122,13 +2110,6 @@ nothing read them, and Phase 4 will add what it actually needs.
   identifies one semantic slot, so a correction replaces the old value and translated input can reuse
   the same slot. Recall includes keys so the model can perform that update. The SQLite migration adds a
   nullable column and partial unique index without rewriting existing rows or changing the HTTP API.
-- Targeted live `revision-sequence` reached 28/29 checks in 283.5 s with 24 calls and 197,542 tokens
-  ($0.048731 estimated). Unauthorized day drift is gone. The remaining measured zero-gap transfer is
-  intentionally left under the earlier correctness item; no smoke or full rerun followed a red target.
-- Targeted `memory-recall` proved the real model accepts `{key, text, scope}` and carries the learned
-  exclusions/interests into the next trip: all three memory/plan-content checks passed. The case was
-  3/4 because unrelated transfer and opening-hours validation remained red. It used 11 calls, 130,240
-  tokens, 161.3 s and an estimated $0.036439. A red relevant target stopped the ladder; it was not rerun.
 
 ## Bounded tool research, normalized caching and measurable value (2026-09-29)
 
@@ -2162,20 +2143,6 @@ nothing read them, and Phase 4 will add what it actually needs.
   The runtime-specific suite proves normalization, TTL expiry, cross-run reuse, value-prioritized budget
   trimming, actual parallel execution with ceilings, retry boundaries and metrics. Android adds the new
   failure-code and metric contract coverage: 95 JVM tests and the debug APK build pass.
-- The paid targeted `specifics` run passed 6/6 in 71.3 s with 5 LLM calls and 45,644 tokens. All 10
-  requested tools executed, 9 were observably represented in the final itinerary, and none failed or
-  retried (estimated model cost $0.0139).
-- The following five-case smoke was red at 3/5: 543.1 s, 37 LLM calls and 413,689 tokens. Of 77 tool
-  requests, 76 executed, 1 hit the run cache, 58 were observably represented, 2 retried and 2 failed
-  (estimated model cost $0.1037). `specifics` and `memory-recall` shipped unresolved measured-transfer
-  gaps; the former also saw a non-JSON weather response, while `budget-tight` recovered from weather
-  timeouts and passed.
-- The previous report for those same five case IDs was 5/5, 477.1 s, 35 LLM calls and 379,198 tokens.
-  This is not a controlled A/B because live model and upstream weather variance were not isolated, so
-  the delta is not attributed solely to this change. It is nevertheless insufficient evidence for the
-  acceptance claim: implementation and offline gates are complete, but lower calls/latency with no
-  quality regression is **not demonstrated**. The red smoke was retained; no full run or best-of rerun
-  followed it.
 
 ## Content-free execution traces and conservative fact coverage (2026-09-30)
 
@@ -2246,53 +2213,6 @@ nothing read them, and Phase 4 will add what it actually needs.
   state change was attempted. Full backend regression: 532 passed, 1 opt-in MCP test
   deselected; Ruff check and formatting pass. Android was not changed or rebuilt here.
 
-## Authorized targeted evals and Phoenix persistence (2026-10-01)
-
-- With explicit user permission, downloaded and started Phoenix 20.1.0 and Collector
-  0.145.0. Actual startup rejected the retry policy because its 10-second elapsed bound
-  was smaller than the default maximum interval. Setting initial/max intervals to 1/5
-  seconds fixed startup; the HTTP receiver and protobuf export then worked.
-- Phoenix's read-only API confirmed the four-span synthetic failure trace
-  `8fccb3e47177447f824eea301b4aa4af`, the 85-span real planning trace
-  `bf55cb154f3c41859ab374503daa833d`, the 60-span `specifics` trace
-  `cee72990aad04d0aa75ec477666ad6a0`, and the 47-span failed revision trace
-  `f280cf7e699f4499bfecf6c9d7c5fab3`. Tree links, typed model/tool/repair spans,
-  source/prompt/schema/tool hashes, a tool `bad_request` and an infeasible root were
-  observable. Specifics' local/Phoenix span counts and estimated model cost matched.
-  `scripts.verify_phoenix` makes these persistence checks reproducible without models.
-- Fixed reference date 2026-09-28, gpt-5.6-luna, Maps enabled. Historical operator rates
-  0.20/0.02/1.20 USD per million input/cached/output tokens were used for estimates,
-  not asserted to be current provider prices; Maps and long-context charges are excluded.
-
-| Target | Checks | Seconds | LLM calls | Tokens | Estimated model USD |
-|---|---:|---:|---:|---:|---:|
-| beyond-forecast-horizon | 4/4 | 144.3 | 7 | 141,455 | 0.03783488 |
-| specifics | 6/6 | 96.9 | 6 | 75,492 | 0.02155274 |
-| revision-sequence | 26/29 | 204.3 | 21 | 197,184 | 0.05013672 |
-
-- Total: 34 model calls, 414,131 tokens, 445.4 seconds and $0.10952434 estimated model
-  cost. The first network-sandbox attempt failed with APIConnectionError before any
-  model usage; its report was retained separately, then the authorized network-capable
-  runner was used. No random best-of reruns or paid smoke/full runs followed.
-- Reports are workspace-local `.eval/phase1-hours-network-2026-10-01.json`,
-  `.eval/phase1-transfers-2026-10-01.json`, `.eval/phase1-revision-2026-10-01.json`.
-  The failed sequence has opening-hours/transfer violations in step 3, overlap/transfer
-  violations in step 4, and opening-hours/transfers in the Boston new-trip step. Locked
-  day and trip-frame checks passed, but the correctness gate is still red.
-- Failed traces show only one repair before termination despite remaining hard violations;
-  under this implementation that indicates the repaired itinerary did not pass parsing.
-  Content-free traces cannot tell whether the cause was a partial object or another
-  schema error. A follow-up prompt now explicitly requests the complete object, not a
-  patch; graph.repair records `invalid_repair_output` separately, without raw replies.
-  The regression proves invalid output remains flagged and bounded. This last prompt /
-  telemetry change has offline verification only, **not** a new live acceptance claim.
-- Live traces identify implementation hash
-  `839ccf8450c53e5808069fa19aebde3f44e337e993cbb0cbceaf9e8ea3182810` before that follow-up.
-  Phoenix/Collector are left running on localhost ports 6006/4318; no container deletion,
-  commit, push or system-configuration changes were made.
-- Final follow-up regression: 534 backend tests passed, 1 opt-in MCP deselected, Ruff
-  check and formatting pass. Android code was not changed during this authorization turn.
-
 ## One shared format correction inside constraint repair (2026-10-01)
 
 - Invalid repair JSON used to set repairs_left=0 immediately. The constraint-repair loop
@@ -2310,43 +2230,9 @@ nothing read them, and Phase 4 will add what it actually needs.
   span retention. Earlier malformed-output tests retain their assertions with an explicit
   second malformed response to exercise the new allowance. Full backend: 539 passed,
   1 opt-in MCP deselected; Ruff and formatting pass. No Android changes in this turn.
-- Under the existing paid-target authorization, ran one changed-version revision-sequence:
-  **29/29**, 199.9 seconds, 20 calls, 208,842 tokens (100,673 cached), estimated model
-  cost $0.04374026 at the same historical operator rates; Maps excluded. Report:
-  `.eval/phase1-revision-format-recovery-2026-10-01.json`. The old 26/29 report is retained.
-  All six plan traces persisted in Phoenix with OK roots and complete parent links:
-  `ac96c44a9355490ca1b277a572def61f`, `84ea9fa03f914746851a14fc6625b49e`,
-  `4c43b1d318dc4bdea8d4ffbfa644db53`, `88fd24570ace4f8893754733c4e68060`,
-  `4c5bb65533cd4db5a5acd5ca1db22285`, `dcb8fe2df81243298af22f989709f926`.
-- That live run used zero extra format corrections. Its passing result validates the
-  changed-version target, not the retry branch in a real model run and not a causal A/B.
-  Compared with the earlier run, calls were 21->20 and latency 204.3->199.9 seconds,
-  but tokens rose 197,184->208,842; no tool-efficiency acceptance claim is made.
-  Live trace implementation hash is
-  `70b0dafafdc696966d44677fe00f1122b6a3b36e72d81ac74659828c1901acc3`.
-- No paid smoke/full run, dependency change, commit or push. Remaining first-stage gates
-  are cross-scenario smoke/full correctness and controlled efficiency evidence; ambiguous
-  same-name branch fact binding is also still a known limitation.
 
-## Authorized cross-scenario gate and efficiency verification (2026-10-01)
+## Frozen-fixture efficiency verification (2026-10-01)
 
-- User explicitly expanded permission to paid smoke/full and efficiency comparison. Ran
-  the fixed five-case smoke once: 4/5 cases, 34/35 checks, 546.7s, 32 LLM calls, 409,080
-  tokens (151,287 cached), 81/81 research tools, zero cache hits and 7 degraded outcomes.
-  Historical-rate estimated model cost: $0.10634934, excluding Maps/long-context charges.
-  Retained `.eval/phase1-release-smoke-2026-10-01.json`; no full run followed the red gate.
-- Memory preference/content checks passed. Its plan still had Holiday Lodge -> Fixins
-  Soul Kitchen with zero gap and a 40-minute measured requirement. Phoenix persisted all
-  seven turns. Failed trace `b259d1ad7246453fa1da25148bf79775` has 84 spans, three valid
-  repair outputs and an infeasible/error root. The new format retry was not used: this
-  remaining failure is schedule repair, not format recovery. No stochastic rerun followed.
-- Added `scripts.compare_evals`: join shared cases, flag different/missing settings,
-  retain missing old tool counters as unknown and report quality regressions. Both old
-  and new comparisons match model/date/Maps/suite/rates, but are not controlled live A/B.
-  Against the earlier all-green five-case subset, calls fell 35->32, time rose 477.1->546.7s,
-  tokens rose 379,198->409,080 and quality fell 5/5->4/5. Against the immediate red smoke,
-  quality improved 3/5->4/5 and calls fell 37->32, but time/cost did not improve. Neither
-  comparison certifies no-quality-regression efficiency acceptance.
 - Added `scripts.benchmark_tools`, a no-network frozen-fixture paired control: two plans,
   four independent tool reads each, fixed model replies/facts and 50ms artificial upstream
   delay. Serial/no-shared-cache and current runtime arms have five repetitions with seeded
@@ -2355,7 +2241,7 @@ nothing read them, and Phase 4 will add what it actually needs.
   This proves cache/concurrency mechanics for that workload, not live production quality,
   model cost or universal end-to-end savings. Raw samples are retained at
   `.eval/phase1-tool-benchmark-2026-10-01.json`.
-- Reproduction commands and the full comparison are in `observability/efficiency.md`.
+- Reproduction commands and fixture results are in `observability/efficiency.md`.
   Backend: 541 passed, 1 opt-in MCP deselected; Ruff/format pass. No production behavior,
   dependencies or Android changes in this verification turn; no commit/push. Release and
   live efficiency gates remain open. Next work should target the measured transfer failure
@@ -2363,7 +2249,7 @@ nothing read them, and Phase 4 will add what it actually needs.
 
 ## Actionable measured-transfer repair (2026-10-01)
 
-- The retained failing smoke put TRANSIT on a food activity, not on an intervening
+- A failing plan put TRANSIT on a food activity, not on an intervening
   transport activity. That does not authorize transit: the validator correctly measured
   the hop as walking. Repair prose gave the required gap but no concrete arrival bound,
   and suggested adding a transport step without saying that a label cannot create time.
@@ -2378,17 +2264,15 @@ nothing read them, and Phase 4 will add what it actually needs.
   Ruff/format and diff checks passed. Android and dependencies unchanged.
 - One authorized changed-version memory-recall target passed 4/4 in 110.0s, 11 LLM calls,
   138,941 tokens (50,447 cached), 32/37 research tools executed, zero cache hits/failures.
-  Current local configuration is gpt-6-luna, unlike the earlier gpt-5.6-luna report.
-  The original target command inherited the old operator rates: its $0.03022774 field is
-  only an old-rate conversion, NOT a supported price estimate for the new model. Treat
-  actual cost as unknown; subsequent gates omit unsupported prices. No config was edited.
+  Current local configuration is gpt-6-luna.
+  Actual cost is unknown; gates omit unsupported prices. No config was edited.
 - Both target traces persisted with complete parent links and OK roots in Phoenix:
   `85f2e234d29241b39b66081e4f8fa667` (69 spans) and
   `672ad07d2a37451fbb805476a324c7b3` (54 spans). The LA turn initially had six measured
   transfer failures and one over-budget finding; one parsed constraint repair cleared
   them on full revalidation. No extra format retry. This supports the live repair path,
   but a model change prevents attributing improvement solely to this prompt change.
-- Raw target: `.eval/phase1-memory-transfer-fix-2026-10-01.json`; old red reports retained.
+- Raw target: `.eval/phase1-memory-transfer-fix-2026-10-01.json`.
   Trace implementation hash: `d68205fca7030e6f98d56ddf1afd7b41923f4511fbd3ca16e13e5d122c44f0ed`.
   An authorized five-case smoke is now running with this same implementation and current
   model. No commit or push.
@@ -2397,9 +2281,6 @@ nothing read them, and Phase 4 will add what it actually needs.
   2 degraded outcomes and no retries. All seven plan traces were verified in Phoenix,
   with the same implementation hash and OK roots. Full nine-case gate is now running.
   Report: `.eval/phase1-transfer-fix-smoke-2026-10-01.json`; prices omitted/unknown.
-  Comparison correctly flags different model/rates. Calls increased 32->36 and tool
-  executions 81->90 versus the old red smoke; neither latency reduction nor recovered
-  quality establishes a causal or no-regression efficiency improvement.
 - Full completed with 8/9 cases, 73/75 checks. Chained revisions failed step 2's removal
   check (a Grand Central Market text reference remained) and step 3's feasibility check
   (Blue Daisy dinner 17:00-18:00 versus published Wednesday 08:00-15:00). There were no
@@ -2577,3 +2458,106 @@ nothing read them, and Phase 4 will add what it actually needs.
   download or global-cache write; all outputs/temp files are workspace-local, and unchanged
   compiled `ApiJson` was reused. A fresh full Android suite/APK was not run. No dependencies,
   model configuration, system configuration, commit or push changes; test stack retained.
+
+## 2026-10-04 · Strict Structured Outputs for planner replies
+
+- Research replies (including the direct itinerary fast path), emit and repair now use
+  Chat Completions `response_format.type=json_schema` with `strict=true`. All object
+  fields are required and objects reject additional properties; nullable fields retain
+  their null alternatives. The prompt and request use the same generated schema.
+- An internal `result` envelope contains either an itinerary or a clarification reply,
+  allowing missing-input and weather-consent questions without fabricating a plan.
+  Parsing unwraps it; the public API and stored itinerary models remain unchanged.
+  Existing function-tool argument contracts are unchanged.
+- Pydantic and feasibility checks remain active. Refusals/content filtering stop with
+  a planning error. Unsupported endpoints are not silently downgraded to JSON mode;
+  configured models/endpoints must support strict Structured Outputs.
+- Ruff lint/format and diff checks only. Backend regression tests and live API calls
+  were not run, as requested; new schema/envelope regression cases remain unexecuted.
+
+## 2026-10-05 · Arrival, hotel windows and cross-zone journeys
+
+- Request-owned constraints now retain arrival with a buffer, hotel room-access and
+  checkout windows with handling durations, and long-distance journeys with both local
+  endpoint timestamps, UTC offsets, buffers and supplied/estimated confidence. Models
+  cannot move a booking or establish early room access. No timetable provider was added.
+- Timed activities retain local clock labels and paired absolute timestamps; validation
+  compares elapsed time and overlaps in UTC, including earlier local arrival dates across
+  the date line. Hotel/overnight journey coverage is checked per night. Legacy same-day
+  activities remain compatible. Opening hours cover every visited local day; booked room
+  access uses the hotel window. Repair context preserves destination-local arrival times,
+  and deterministic clock-only repair skips absolute activities.
+- The server attaches the timing snapshot to saved/shared itineraries and restores it
+  for revisions lacking a separate constraint snapshot. Android retains the contract and
+  displays both endpoint dates/offsets plus booking windows and estimated-time warnings.
+- Verification: backend **709 passed, 1 deselected** under the documented offline test
+  configuration; changed Python files pass Ruff lint/format checks. Cached Kotlin and
+  Compose compilation plus **43 JVM tests passed**, with all generated outputs inside
+  the workspace. Full APK/device tests, live routing and timetable verification were
+  not run. No dependencies, global configuration, commits or pushes were changed.
+
+## 2026-10-05 · Travel Planner skill without Wanderlog
+
+- Vendor ZawYePhyo's MIT-licensed Travel Planner skill and references in
+  `backend/skills/travel-planner`, with source attribution and snapshot SHA-256 hashes.
+  The source was retrieved from main; an upstream commit could not be resolved, so no
+  commit pin is claimed. Docker includes the same files used by local planning.
+- Load the planning workflow and references into the backend prompt, replacing overlapping
+  planning instructions. Exclude Wanderlog instructions and tools entirely. Keep the
+  JSON/SSE transport, request-owned constraints, deterministic costs, observed hours,
+  routes and repair checks: these are execution contracts, not skill implementations.
+- Apply the skill's stateless rule: stop advertising memory writes and stop recalling
+  durable preferences. Existing preference data and its authenticated list/delete API
+  remain for legacy management; Android explains that new trips use current-trip inputs.
+- Add Brave-backed `search_web` using existing httpx, with bounded excerpts, URLs and
+  collection times. It shares the tool pool/cache/budget/failure contract. The server
+  operator supplies `BRAVE_SEARCH_API_KEY`; no live key or service configuration was
+  changed. Search excerpts are partial evidence, not full-page or inventory verification.
+- Add nullable `travel_guide` and daily `fallback_options` to the itinerary contract;
+  Android retains and displays them across saved/shared plans and revisions. Filter
+  source URLs to successful observed tool results; keep fallback costs outside scheduled
+  totals. Self-review notes are model output, not evidence that deterministic checks ran.
+- Verification: **725 backend tests passed, 1 opt-in MCP test deselected**; Ruff lint and
+  formatting passed. Pytest could not write its workspace-local cache (WinError 5);
+  test execution succeeded. Cached Kotlin/Compose compilation and **44 JVM tests passed**,
+  with all new outputs and temporary files inside the workspace. No full APK/device,
+  real model, web-search or live regression eval was run. Earlier live-policy results
+  remain historical; its memory-recall case is not acceptance evidence for this policy.
+- No dependency installation, global configuration, existing database migration/deletion,
+  commit or push was performed.
+
+## 2026-10-05 · App research through MCP without Wanderlog
+
+- Supersedes the 2026-08-05 direct-call decision: App research now goes through the
+  existing MCP SDK to the project's own stdio server. Weather, Places, Routes and
+  Brave web search share the same implementations and typed outcomes. No dependency
+  was added and no external MCP service or Wanderlog account is required.
+- One uncached batch shares a child process, MCP session and server-owned HTTP pool.
+  The planner retains its cache, deduplication, concurrency, budget and retry policies.
+  Route validation also uses MCP, preserving timezone-aware departure timestamps.
+  Transport failure returns a safe typed failure rather than bypassing MCP.
+- The server receives only research settings. Account identity remains in the host;
+  no memory-write or Wanderlog tool is published. Credentials are not tool arguments.
+- Real stdio tests are included. In the current restricted Windows runner, creation
+  of Python's subprocess communication pipe fails with WinError 5 before the MCP
+  handshake. This transport validation requires permission to run outside that sandbox.
+- Validation: full backend run reported 730 passed, 2 stdio failures and 1 pre-existing
+  opt-in network test deselected. Two additional tests subsequently passed using the
+  real SDK protocol over memory streams, covering discovery, concurrent typed results,
+  session reuse and planner dispatch. Ruff lint/format and diff checks passed. No live
+  provider calls, dependencies, global configuration, commit or push were performed.
+
+## 2026-10-05 · Review and remove obsolete planner paths
+
+- Fix web research tracing: `search_web` is now an allowlisted tool name instead of
+  `unknown`. Query text remains excluded from exported traces.
+- Contain MCP cleanup errors so a failed shutdown cannot replace a completed result
+  or the original planning exception. Reset session context and log only error types.
+- Ignore malformed non-list web-search extra snippets rather than treating strings
+  or mapping keys as source excerpts. Keep valid primary descriptions.
+- Remove the unused client-pool predicate, obsolete recall prompt and live memory
+  smoke script. Retain legacy preference storage and management interfaces.
+- Full backend verification: 738 passed, 2 pre-existing stdio failures from the Windows
+  sandbox pipe restriction, 1 opt-in network test deselected. Ruff lint/format and diff
+  checks passed. No Android code or dependencies were changed; no live providers,
+  full Android build, commit or push were run.

@@ -13,6 +13,7 @@ were both written by a model that had the answer in a form it could not use.
 
 from app.agent import opening_hours, proximity
 from app.agent.opening_hours import WEEKDAYS
+from app.tools.money import range_average
 
 #: Mon-first, matching how opening hours read and how people think about a week.
 _ORDER = list(WEEKDAYS)
@@ -21,14 +22,6 @@ _SHORT = {day: day[:3].capitalize() for day in _ORDER}
 #: One line per venue plus the pair list is O(n^2); the cap keeps the block bounded.
 #: Truncation is always announced -- a shortened list reads as the complete one.
 MAX_VENUES = proximity.MAX_VENUES
-
-PRICE_WORDS = {
-    "PRICE_LEVEL_FREE": "free",
-    "PRICE_LEVEL_INEXPENSIVE": "cheap",
-    "PRICE_LEVEL_MODERATE": "mid-priced",
-    "PRICE_LEVEL_EXPENSIVE": "expensive",
-    "PRICE_LEVEL_VERY_EXPENSIVE": "very expensive",
-}
 
 
 def summarize_hours(descriptions: list[str]) -> str | None:
@@ -51,7 +44,11 @@ def summarize_hours(descriptions: list[str]) -> str | None:
             if windows
             else "closed"
         )
-        if groups and groups[-1][1] == spec:
+        if (
+            groups
+            and groups[-1][1] == spec
+            and _ORDER.index(groups[-1][0][-1]) + 1 == _ORDER.index(day)
+        ):
             groups[-1][0].append(day)
         else:
             groups.append(([day], spec))
@@ -60,17 +57,26 @@ def summarize_hours(descriptions: list[str]) -> str | None:
     for days, spec in groups:
         label = _SHORT[days[0]] if len(days) == 1 else f"{_SHORT[days[0]]}-{_SHORT[days[-1]]}"
         parts.append(f"{label} {spec}")
+    for day, windows in sorted(parsed.items()):
+        if day in WEEKDAYS:
+            continue
+        spec = (
+            ", ".join(f"{_clock(start)}-{_clock(end)}" for start, end in windows)
+            if windows
+            else "closed"
+        )
+        parts.append(f"{day} override {spec}")
     return "; ".join(parts) or None
 
 
 def _clock(minute: int) -> str:
-    return f"{minute // 60:02d}:{minute % 60:02d}"
+    return opening_hours._clock(minute)
 
 
 def render(
     points: dict[str, tuple[float, float]],
     hours: dict[str, list[str]],
-    prices: dict[str, str],
+    prices: dict[str, dict],
     addresses: dict[str, str] | None = None,
     *,
     collected_at: str | None = None,
@@ -95,9 +101,14 @@ def render(
             facts.append(f"coordinates {latitude:.5f},{longitude:.5f}")
         summary = summarize_hours(hours.get(name) or [])
         facts.append(summary if summary else "hours not published")
-        band = PRICE_WORDS.get(prices.get(name, ""))
-        if band:
-            facts.append(band)
+        average = range_average(prices.get(name))
+        if average:
+            facts.append(
+                f"restaurant per-person estimate {average.amount:.2f} {average.currency} "
+                "(priceRange midpoint, not a quote)"
+            )
+        elif name in prices:
+            facts.append("restaurant priceRange incomplete; midpoint unknown")
         lines.append(f"- {name}: {' | '.join(facts)}")
 
     freshness = "source=Google Places"

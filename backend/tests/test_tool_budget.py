@@ -59,7 +59,11 @@ def flood(count: int):
         tool_calls=[
             tool_call(
                 "get_weather_forecast",
-                {"city": f"Chicago {index}", "start_date": "2026-09-07", "end_date": "2026-09-07"},
+                {
+                    "city": "Chicago" if index == 0 else f"Chicago {index}",
+                    "start_date": "2026-09-07",
+                    "end_date": "2026-09-07",
+                },
                 call_id=f"c{index}",
             )
             for index in range(count)

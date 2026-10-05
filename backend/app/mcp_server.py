@@ -1,42 +1,44 @@
-"""Wandergent's tools, exposed over the Model Context Protocol.
+"""Public research tools used by the App backend through MCP over stdio.
 
-**This is a second surface, not a replacement.** The planning agent keeps calling its
-tools in-process: routing its own function calls through JSON-RPC would add a
-serialisation round trip per call inside a single process, and would break the request
-context (`user_id`) that the in-process registry injects -- MCP has no channel for
-"who is this request for".
-
-What this buys instead is reuse: any MCP client -- Claude Desktop, another agent, a
-notebook -- can use the same weather tool, from the same implementation. One
-implementation, two surfaces, no duplicated logic.
-
-Run it:
-
-    cd backend && uv run python -m app.mcp_server          # stdio, for desktop clients
-    cd backend && uv run python -m app.mcp_server --http   # streamable HTTP on :8765
-
-**Memory is deliberately not exposed here.** `remember_preference` writes to one user's
-store, and this surface authenticates nobody -- a client could claim any id and pollute
-someone else's preferences. It stays behind the agent, where identity comes from a token.
+The same service can be used by external MCP clients. No memory writes or Wanderlog tools.
 """
 
+import logging
 import sys
+from contextlib import asynccontextmanager
 
+import httpx
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from pydantic import AwareDatetime
 
+from app.config import settings
 from app.tools.maps import DEFAULT_LANGUAGE, MAX_PLACES, PlacesResult, TravelTime
 from app.tools.maps import get_travel_time as _get_travel_time
 from app.tools.maps import search_places as _search_places
 from app.tools.weather import FORECAST_DAYS, WeatherForecast
 from app.tools.weather import get_weather_forecast as _get_weather_forecast
+from app.tools.web_search import WebResearch
+from app.tools.web_search import search_web as _search_web
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+@asynccontextmanager
+async def lifespan(_: MCPServer):
+    async with httpx.AsyncClient(timeout=settings.tool_timeout_seconds) as client:
+        yield {"http_client": client}
+
 
 server = MCPServer(
     name="wandergent",
     version="0.1.0",
+    lifespan=lifespan,
     instructions=(
         "Travel-planning tools from the Wandergent project. The weather tool is keyless "
         "(Open-Meteo) and degrades gracefully instead of failing. The maps tools need the "
-        "server configured with a Google Maps key; without one they return ok=false."
+        "server configured with a Google Maps key; web research needs a Brave Search key. "
+        "Unconfigured services return ok=false. No memory writes or Wanderlog operations."
     ),
 )
 
@@ -56,11 +58,17 @@ async def get_weather_forecast(
     city: str,
     start_date: str,
     end_date: str,
+    ctx: Context,
+    language: str = DEFAULT_LANGUAGE,
 ) -> WeatherForecast:
     """City name plus an ISO date range, e.g. ("Chicago", "2026-08-10", "2026-08-12")."""
-    # Straight through to the implementation the agent uses. Only the three public
-    # parameters are exposed; the injectable client and clock stay internal.
-    return await _get_weather_forecast(city, start_date, end_date)
+    return await _get_weather_forecast(
+        city,
+        start_date,
+        end_date,
+        language=language,
+        client=ctx.request_context.lifespan_context["http_client"],
+    )
 
 
 @server.tool(
@@ -74,10 +82,22 @@ async def get_weather_forecast(
     ),
 )
 async def search_places(
-    query: str, near: str, limit: int = 4, language: str = DEFAULT_LANGUAGE
+    query: str,
+    near: str,
+    ctx: Context,
+    limit: int = 4,
+    language: str = DEFAULT_LANGUAGE,
+    purpose: str = "required",
 ) -> PlacesResult:
     """What to look for plus where, e.g. ("deep dish pizza", "Chicago")."""
-    return await _search_places(query, near, limit, language)
+    return await _search_places(
+        query,
+        near,
+        limit,
+        language,
+        purpose,
+        client=ctx.request_context.lifespan_context["http_client"],
+    )
 
 
 @server.tool(
@@ -89,9 +109,32 @@ async def search_places(
         "is ok=false with no route, so fall back to another mode. Never raises."
     ),
 )
-async def get_travel_time(origin: str, destination: str, mode: str = "WALK") -> TravelTime:
+async def get_travel_time(
+    origin: str,
+    destination: str,
+    ctx: Context,
+    mode: str = "WALK",
+    depart_at: AwareDatetime | None = None,
+) -> TravelTime:
     """Two place names or addresses, plus WALK, DRIVE or TRANSIT."""
-    return await _get_travel_time(origin, destination, mode)
+    return await _get_travel_time(
+        origin,
+        destination,
+        mode,
+        depart_at=depart_at,
+        client=ctx.request_context.lifespan_context["http_client"],
+    )
+
+
+@server.tool(
+    name="search_web",
+    title="Destination research",
+    description="Research destination facts with source URLs and dated search excerpts. "
+    "Requires server-configured Brave Search. Excerpts are partial evidence; failures "
+    "return ok=false. No bookings or account writes.",
+)
+async def search_web(query: str, ctx: Context) -> WebResearch:
+    return await _search_web(query, client=ctx.request_context.lifespan_context["http_client"])
 
 
 def main() -> None:

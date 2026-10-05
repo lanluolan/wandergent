@@ -12,14 +12,17 @@ on:
         default: smoke
         options: [smoke, all]
       input_usd_per_million:
-        description: "Model input USD per 1M tokens"
-        default: "0.20"
+        description: "Model input USD per 1M tokens (blank means unknown)"
+        default: ""
       cached_usd_per_million:
-        description: "Model cached-input USD per 1M tokens"
-        default: "0.02"
+        description: "Model cached-input USD per 1M tokens (blank means unknown)"
+        default: ""
       output_usd_per_million:
-        description: "Model output USD per 1M tokens"
-        default: "1.20"
+        description: "Model output USD per 1M tokens (blank means unknown)"
+        default: ""
+      pricing_source:
+        description: "Source for the supplied model rates (optional)"
+        default: ""
 
 jobs:
   eval:
@@ -46,14 +49,20 @@ jobs:
           # Without it the maps tools degrade rather than fail, so the run still
           # completes -- it just measures a different agent than production.
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          INPUT_RATE: ${{ inputs.input_usd_per_million }}
+          CACHED_RATE: ${{ inputs.cached_usd_per_million }}
+          OUTPUT_RATE: ${{ inputs.output_usd_per_million }}
+          PRICING_SOURCE: ${{ inputs.pricing_source }}
         run: |
+          pricing_args=()
+          [[ -z "$INPUT_RATE" ]] || pricing_args+=(--input-usd-per-million "$INPUT_RATE")
+          [[ -z "$CACHED_RATE" ]] || pricing_args+=(--cached-usd-per-million "$CACHED_RATE")
+          [[ -z "$OUTPUT_RATE" ]] || pricing_args+=(--output-usd-per-million "$OUTPUT_RATE")
+          [[ -z "$PRICING_SOURCE" ]] || pricing_args+=(--pricing-source "$PRICING_SOURCE")
           uv run python -m evals.run \
             ${{ inputs.subset == 'all' && '--all' || '' }} \
             --today 2026-09-28 \
-            --input-usd-per-million ${{ inputs.input_usd_per_million }} \
-            --cached-usd-per-million ${{ inputs.cached_usd_per_million }} \
-            --output-usd-per-million ${{ inputs.output_usd_per_million }} \
-            --pricing-source https://developers.openai.com/api/docs/models/gpt-5.6-luna \
+            "${pricing_args[@]}" \
             --json eval-result.json
 
       - uses: actions/upload-artifact@v7.0.1

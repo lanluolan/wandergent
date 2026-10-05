@@ -46,9 +46,9 @@ def test_formats_seen_in_the_wild(line: str, expected: list[tuple[int, int]]) ->
     assert parse([line])["monday"] == expected
 
 
-def test_a_range_over_midnight_runs_to_the_end_of_the_day() -> None:
+def test_a_range_over_midnight_retains_the_next_morning() -> None:
     """A bar open until 2am must not read as "closes before it opens" and vanish."""
-    assert parse(["Monday: 5:00 PM – 2:00 AM"])["monday"] == [(17 * 60, 24 * 60)]
+    assert parse(["Monday: 5:00 PM – 2:00 AM"])["monday"] == [(17 * 60, 26 * 60)]
 
 
 @pytest.mark.parametrize(

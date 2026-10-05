@@ -6,7 +6,7 @@ short, and one it happened to flag stays flagged with the real number attached.
 """
 
 import asyncio
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -26,6 +26,7 @@ def transfer_violation(gap: int, origin: str = "A", destination: str = "B") -> V
         origin=origin,
         destination=destination,
         gap_minutes=gap,
+        depart_at_minute=12 * 60,
         message="heuristic said this looked tight",
     )
 
@@ -248,14 +249,12 @@ def test_the_departure_is_the_travellers_local_clock_not_utc() -> None:
     assert moment.date() == date(2099, 8, 6)
 
 
-def test_a_past_trip_slides_forward_by_whole_weeks() -> None:
-    """Google will not price yesterday's rush hour. Keep the weekday and the clock."""
+def test_a_past_trip_keeps_its_actual_date() -> None:
     past = date(2020, 8, 6)  # a Thursday
     moment = transfers._departure_instant(past, 18 * 60, CHICAGO)
 
     assert moment is not None
-    assert moment > datetime.now(UTC)
-    # Both things a transit timetable depends on survive the slide.
+    assert moment.date() == past
     assert (moment + CHICAGO).weekday() == past.weekday()
     assert (moment + CHICAGO).hour == 18
 

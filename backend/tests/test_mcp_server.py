@@ -25,7 +25,7 @@ async def test_the_tool_is_registered_with_a_usable_schema() -> None:
 
     weather = next(tool for tool in tools if tool.name == "get_weather_forecast")
     properties = weather.input_schema["properties"]
-    assert set(properties) == {"city", "start_date", "end_date"}
+    assert set(properties) == {"city", "start_date", "end_date", "language"}
     # The injectable client and clock are implementation details and must not leak.
     assert "client" not in properties
     assert "today" not in properties
@@ -43,11 +43,11 @@ async def test_the_maps_tools_are_published_without_their_seams() -> None:
     assert {"search_places", "get_travel_time"} <= set(tools)
 
     places = tools["search_places"].input_schema["properties"]
-    assert set(places) == {"query", "near", "limit", "language"}
+    assert set(places) == {"query", "near", "limit", "language", "purpose"}
     assert "client" not in places
 
     travel = tools["get_travel_time"].input_schema["properties"]
-    assert set(travel) == {"origin", "destination", "mode"}
+    assert set(travel) == {"origin", "destination", "mode", "depart_at"}
     # Transit coverage is regional; the description has to say so, or a client will read
     # an empty answer as "no route exists" rather than "not offered here".
     assert "transit" in tools["get_travel_time"].description.lower()

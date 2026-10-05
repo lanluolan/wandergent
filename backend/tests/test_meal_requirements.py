@@ -36,10 +36,16 @@ def test_literal_specialty_parser_has_day_and_meal_scope_not_a_dish_dictionary()
 
 
 @pytest.mark.parametrize("spelling", ["po-boy", "po' boy", "poboy", "PO BOY"])
-def test_specialty_may_be_a_recommendation_without_renaming_or_claiming_verified_menu(spelling):
+def test_requested_specialty_in_meal_title_satisfies_the_edit(spelling):
     value = meal_plan()
-    value.days[1].activities[0].highlights = [f"Roast beef {spelling}"]
+    value.days[1].activities[0].title = f"Lunch at a {spelling} restaurant (unverified menu)"
     assert validate_itinerary(value, meals=resolve_meal_requirements(REQUEST)).ok
+
+
+def test_legacy_highlight_cannot_satisfy_the_visible_meal_edit():
+    value = meal_plan()
+    value.days[1].activities[0].highlights = ["Roast beef po-boy"]
+    assert not validate_itinerary(value, meals=resolve_meal_requirements(REQUEST)).ok
 
 
 @pytest.mark.parametrize("wrong_scope", ["day", "meal", "category", "notes"])
@@ -70,13 +76,17 @@ def test_nonexistent_day_is_not_a_silent_success():
 async def test_graph_repairs_missing_specialty_without_rewriting_the_locked_day(corrected):
     original = meal_plan()
     fixed = original.model_copy(deep=True)
-    fixed.days[1].activities[0].highlights = ["Roast beef po-boy"]
+    fixed.days[1].activities[0].title = "Lunch at a po-boy restaurant (unverified menu)"
     replies = [original, fixed] if corrected else [original] * 4
     llm = FakeLLM([completion(content=value.model_dump_json()) for value in replies])
     result = await orchestrator.plan_trip(
         REQUEST, previous=original, client=llm, model="test-model"
     )
     assert result.validation.ok is corrected
-    assert result.itinerary.days[0] == original.days[0]
+    expected = original.days[0].model_copy(deep=True)
+    for activity in expected.activities:
+        activity.highlights = []
+        activity.place_summary = None
+    assert result.itinerary.days[0] == expected
     assert len(llm.requests) == (2 if corrected else 4)
     assert "po-boy" in llm.requests[1]["messages"][-1]["content"]

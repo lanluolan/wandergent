@@ -132,8 +132,11 @@ def parse_itinerary(raw: str | None) -> tuple[Itinerary | None, str | None]:
     if not raw or not raw.strip():
         return None, "the model returned an empty message"
     try:
-        return Itinerary.model_validate_json(strip_fences(raw)), None
-    except ValidationError as exc:
+        payload = json.loads(strip_fences(raw))
+        if isinstance(payload, dict) and "result" in payload:
+            payload = payload["result"]
+        return Itinerary.model_validate(payload), None
+    except (ValueError, ValidationError) as exc:
         return None, str(exc)
 
 
@@ -259,6 +262,7 @@ async def _stream_turn(
     than provider exceptions, whether they happen on connect or mid-stream.
     """
     last_hint: str | None = None
+    refusal = ""
     try:
         stream = await client.chat.completions.create(
             model=model,
@@ -266,8 +270,7 @@ async def _stream_turn(
             # OpenAI reasoning models reject the legacy `max_tokens` parameter. The
             # current API uses `max_completion_tokens` for the same output ceiling.
             max_completion_tokens=settings.llm_max_output_tokens,
-            # Chat Completions on gpt-5.6-luna only supports function tools when
-            # reasoning_effort is explicitly disabled.
+            # Keep reasoning disabled for the planner's function-tool calls.
             reasoning_effort="none",
             # Buys a final chunk with empty `choices` and populated `usage`. An endpoint
             # that ignores the option never sends it, and the run reports zero.
@@ -286,6 +289,9 @@ async def _stream_turn(
             if getattr(choice, "finish_reason", None):
                 turn.finish_reason = choice.finish_reason
             delta = choice.delta
+
+            if getattr(delta, "refusal", None):
+                refusal += delta.refusal
 
             if delta.content:
                 turn.content += delta.content
@@ -306,6 +312,8 @@ async def _stream_turn(
                         slot.name += fragment.function.name
                     if fragment.function.arguments:
                         slot.arguments += fragment.function.arguments
+        if refusal or turn.finish_reason == "content_filter":
+            raise PlanningError("the language model declined to produce a plan")
     except (APITimeoutError, httpx.TimeoutException) as exc:
         raise PlanningTimeout("the language model timed out") from exc
     except (APIError, httpx.HTTPError) as exc:

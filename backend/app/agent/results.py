@@ -4,13 +4,14 @@ Split out from the orchestrator so that both the orchestrator and the streaming 
 model can depend on them without a circular import.
 """
 
+from datetime import date
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.agent.constraints import TripConstraints
-from app.agent.schemas import Itinerary
+from app.agent.schemas import Itinerary, strict_output_schema
 from app.agent.validation import ValidationReport
 
 #: How a run fell short of what it set out to do. Every code describes the *run*, never
@@ -215,6 +216,43 @@ class ToolUsage(BaseModel):
         )
 
 
+class PlanContinuation(BaseModel):
+    """Bounded request context returned to the client for a clarification reply."""
+
+    request: str = Field(max_length=16000)
+    questions: list[str] = Field(min_length=1, max_length=10)
+    weather_dates: list[str] = Field(default_factory=list, max_length=60)
+
+    @field_validator("weather_dates")
+    @classmethod
+    def valid_weather_dates(cls, values: list[str]) -> list[str]:
+        return [date.fromisoformat(value).isoformat() for value in values]
+
+
+class Clarification(BaseModel):
+    questions: list[str] = Field(min_length=1, max_length=10)
+    reason: Literal["inputs", "weather", "transport"] = "inputs"
+
+
+class ClarificationReply(BaseModel):
+    clarification: Clarification
+
+
+class PlanningOutput(BaseModel):
+    result: Itinerary | ClarificationReply
+
+
+def planning_response_format() -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "planning_output",
+            "strict": True,
+            "schema": strict_output_schema(PlanningOutput),
+        },
+    }
+
+
 class PlanResult(BaseModel):
     """Outcome of one planning run."""
 
@@ -224,6 +262,8 @@ class PlanResult(BaseModel):
 
     constraints: TripConstraints = TripConstraints()
     itinerary: Itinerary | None = None
+    clarification: Clarification | None = None
+    continuation: PlanContinuation | None = None
     tool_calls: list[ToolCallRecord] = []
     tool_usage: ToolUsage = ToolUsage()
     activity_evidence: list["ActivityEvidence"] = []
@@ -252,7 +292,7 @@ class ActivityEvidence(BaseModel):
     collected_at: str | None = None
     venue_verified: bool = False
     hours_available: bool = False
-    price_level_available: bool = False
+    price_range_available: bool = False
     price_confidence: Literal["estimate"] = "estimate"
     recheck_before_departure: bool = True
     route_source: str | None = None

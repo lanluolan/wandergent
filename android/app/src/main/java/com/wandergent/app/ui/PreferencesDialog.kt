@@ -91,14 +91,14 @@ internal fun PreferencesContent(
         title = { Text("Saved preferences") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("These preferences help shape future trips. Delete anything that no longer fits.")
+                Text("These are preferences saved by the previous planner. New trips use only the preferences you provide for that trip.")
                 if (busy) CircularProgressIndicator(Modifier.size(24.dp))
                 if (error != null) {
                     Text(error, color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = onRetry, enabled = !busy) { Text("Refresh") }
                 }
                 if (loaded && preferences.isEmpty() && !busy && error == null) {
-                    Text("No saved preferences yet. Tell the planner what you enjoy on your next trip.")
+                    Text("No previously saved preferences.")
                 }
                 LazyColumn(
                     modifier = Modifier.heightIn(max = 340.dp),
@@ -122,7 +122,7 @@ internal fun PreferencesContent(
             title = { Text("Delete this preference?") },
             text = {
                 Text(
-                    "“${preference.text}”\n\nFuture plans will stop using this saved preference. " +
+                    "“${preference.text}”\n\nDelete this previously saved preference. " +
                         "Existing plans and trips already being planned will stay as they are.",
                 )
             },

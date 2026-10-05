@@ -38,6 +38,8 @@ from app.tools.base import (
     ToolOutcome,
     http_failure_code,
 )
+from app.tools.money import Money, PriceRange, google_money
+from app.tools.place_summary import PlaceSummary, google_place_summary
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +66,23 @@ PLACES_FIELD_MASK = ",".join(
         "places.location",
         "places.rating",
         "places.userRatingCount",
-        "places.priceLevel",
+        "places.priceRange",
+        "places.editorialSummary",
         # Without hours a plan can schedule a museum on the day it is shut and nothing
         # downstream notices -- budget, timing and routing checks all pass at a locked
         # door. `businessStatus` is the same gap worse: a venue closed for good still
         # reads as a fine recommendation.
         "places.regularOpeningHours",
+        "places.currentOpeningHours",
+        "places.utcOffsetMinutes",
         "places.businessStatus",
         "places.types",
     )
 )
-ROUTES_FIELD_MASK = "routes.duration,routes.distanceMeters"
+ROUTES_FIELD_MASK = (
+    "routes.duration,routes.distanceMeters,routes.travelAdvisory.transitFare,"
+    "routes.travelAdvisory.tollInfo"
+)
 
 MAX_PLACES = 8
 DEFAULT_PLACES = 4
@@ -113,7 +121,7 @@ class Place(ToolOutcome):
 
     name: str
     address: str | None = None
-    #: Per-weekday opening text as Google renders it, e.g. "Monday: Closed". Empty when
+    #: Regular weekday text plus ISO-date overrides from currentOpeningHours. Empty when
     #: Google has no hours for the place, which is common for parks and viewpoints.
     opening_hours: list[str] = []
     #: Observed Google types, used to avoid replacing a restaurant with an unrelated venue.
@@ -122,7 +130,8 @@ class Place(ToolOutcome):
     longitude: float | None = None
     rating: float | None = None
     rating_count: int | None = None
-    price_level: str | None = None
+    price_range: PriceRange | None = None
+    editorial_summary: PlaceSummary | None = None
 
 
 class PlacesResult(ToolOutcome):
@@ -140,6 +149,9 @@ class TravelTime(ToolOutcome):
     mode: str
     seconds: int | None = None
     meters: int | None = None
+    transit_fare: Money | None = None
+    toll_prices: list[Money] = []
+    toll_prices_known: bool = False
 
 
 PLACES_TOOL_SCHEMA: dict = {
@@ -207,10 +219,9 @@ TRAVEL_TOOL_SCHEMA: dict = {
             "Call it before you commit to a schedule, for any two consecutive activities "
             "in different places -- not only when a gap already looks wrong. The straight-"
             "line distances you were given are estimates; this is the real number. "
-            "TRANSIT is how people actually cross a city and is the best default there; "
-            "WALK for short hops, DRIVE for longer ones or where transit is thin. Transit "
-            "data is unavailable in some countries (notably Japan) and comes back with no "
-            "route -- use WALK or DRIVE there."
+            "Honor the user's specified permitted mode. Otherwise compare permitted modes "
+            "and prefer the shortest travel time. Transit coverage varies; if a specified "
+            "mode has no route, ask before switching."
         ),
         "parameters": {
             "type": "object",
@@ -244,19 +255,86 @@ def _headers(field_mask: str) -> dict[str, str]:
     }
 
 
+def _current_hours(raw: dict[str, Any], now: datetime | None = None) -> list[str]:
+    """Date-scoped intervals; missing or malformed data must not invent closures."""
+    current = raw.get("currentOpeningHours") or {}
+    periods = current.get("periods")
+    offset = raw.get("utcOffsetMinutes")
+    if not isinstance(periods, list) or not isinstance(offset, int):
+        return []
+    today = ((now or datetime.now(UTC)) + timedelta(minutes=offset)).date()
+    lower = datetime.combine(today, time.min)
+    upper = lower + timedelta(days=7)
+    windows: dict[date, list[tuple[int, int]]] = {today + timedelta(days=i): [] for i in range(7)}
+
+    def point(value: dict[str, Any]) -> datetime:
+        stamp = value["date"]
+        return datetime(
+            stamp["year"],
+            stamp["month"],
+            stamp["day"],
+            value.get("hour", 0),
+            value.get("minute", 0),
+        )
+
+    try:
+        for period in periods:
+            opened = period["open"]
+            if "close" not in period:
+                # Google's documented always-open sentinel, not an arbitrary missing close.
+                if opened.get("day") != 0 or any(
+                    opened.get(key, 0) != 0 for key in ("hour", "minute")
+                ):
+                    return []
+                start, end = lower, upper
+            else:
+                start, end = point(opened), point(period["close"])
+                if end <= start:
+                    return []
+                start, end = max(lower, start), min(upper, end)
+            while start < end:
+                midnight = datetime.combine(start.date() + timedelta(days=1), time.min)
+                stop = min(end, midnight)
+                left = start.hour * 60 + start.minute
+                right = 1440 if stop == midnight else stop.hour * 60 + stop.minute
+                windows[start.date()].append((left, right))
+                start = stop
+    except (KeyError, TypeError, ValueError):
+        return []
+    return [
+        f"{day}: "
+        + (
+            ", ".join(
+                f"{left // 60:02d}:{left % 60:02d}-{right // 60:02d}:{right % 60:02d}"
+                for left, right in sorted(intervals)
+            )
+            if intervals
+            else "Closed"
+        )
+        for day, intervals in windows.items()
+    ]
+
+
 def _to_place(raw: dict[str, Any]) -> Place:
     location = raw.get("location") or {}
     hours = (raw.get("regularOpeningHours") or {}).get("weekdayDescriptions") or []
+    prices = raw.get("priceRange") or {}
     return Place(
         name=(raw.get("displayName") or {}).get("text") or "unknown",
         address=raw.get("formattedAddress"),
-        opening_hours=list(hours),
+        opening_hours=[*hours, *_current_hours(raw)],
         types=[value for value in raw.get("types") or [] if isinstance(value, str)],
         latitude=location.get("latitude"),
         longitude=location.get("longitude"),
         rating=raw.get("rating"),
         rating_count=raw.get("userRatingCount"),
-        price_level=raw.get("priceLevel"),
+        price_range=PriceRange(
+            start_price=google_money(prices.get("startPrice")),
+            end_price=google_money(prices.get("endPrice")),
+        )
+        if prices
+        else None,
+        editorial_summary=google_place_summary(raw.get("editorialSummary")),
     )
 
 
@@ -600,60 +678,92 @@ async def local_utc_offset(
     place: str,
     on: date | None = None,
     *,
+    minute: int | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> timedelta | None:
     """The destination's offset from UTC, or None if it cannot be established.
 
     Two calls -- geocode the place, then ask the Time Zone API about that point -- so
-    callers resolve it *once per plan* and reuse it.
+    callers may reuse it only for the same departure place and time.
 
     `on` is the trip date, and it matters: the offset is a function of the instant, so a
     summer trip measured with a winter offset is an hour out.
 
-    None rather than a guess on every failure path. A wrong offset silently moves every
-    measurement to the wrong hour while looking fixed; None falls back to a reference
-    documented as optimistic.
+    With `minute`, resolve the local wall clock at the departure instant. Nonexistent
+    or ambiguous transition times return None instead of choosing a clock silently.
     """
     if not settings.google_maps_api_key:
         return None
 
     if client is not None:
-        return await _timezone_for(client, place, on)
+        return await _timezone_for(client, place, on, minute)
     timeout = httpx.Timeout(settings.tool_timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout) as owned:
-        return await _timezone_for(owned, place, on)
+        return await _timezone_for(owned, place, on, minute)
 
 
-async def _timezone_for(client: httpx.AsyncClient, place: str, on: date | None) -> timedelta | None:
+async def _timezone_for(
+    client: httpx.AsyncClient, place: str, on: date | None, minute: int | None = None
+) -> timedelta | None:
+    if minute is not None and (on is None or not 0 <= minute < 1440):
+        return None
     located = await _geocode_one(client, place, DEFAULT_LANGUAGE)
     if not located.ok or located.latitude is None or located.longitude is None:
         logger.info("no timezone for %r: %s", place, located.error)
         return None
 
     when = datetime.combine(on, time(12, 0), tzinfo=UTC) if on else datetime.now(UTC)
+    if minute is None:
+        return await _timezone_offset(client, located.latitude, located.longitude, when)
+    local_clock = datetime.combine(on, time(0, 0), tzinfo=UTC) + timedelta(minutes=minute)
+    offsets = await asyncio.gather(
+        *(
+            _timezone_offset(client, located.latitude, located.longitude, local_clock + delta)
+            for delta in (timedelta(days=-1), timedelta(days=1))
+        )
+    )
+    if any(offset is None for offset in offsets):
+        return None
+    valid = []
+    for offset in set(offsets):
+        actual = await _timezone_offset(
+            client, located.latitude, located.longitude, local_clock - offset
+        )
+        if actual is None:
+            return None
+        if actual == offset:
+            valid.append(offset)
+    return valid[0] if len(valid) == 1 else None
+
+
+async def _timezone_offset(
+    client: httpx.AsyncClient, latitude: float, longitude: float, when: datetime
+) -> timedelta | None:
     try:
         response = await client.get(
             TIMEZONE_URL,
             params={
-                "location": f"{located.latitude},{located.longitude}",
+                "location": f"{latitude},{longitude}",
                 "timestamp": int(when.timestamp()),
                 "key": settings.google_maps_api_key,
             },
         )
         response.raise_for_status()
         payload = response.json()
-    except httpx.HTTPError as exc:
-        logger.warning("timezone lookup failed for %r: %s", place, exc)
+    except (httpx.HTTPError, ValueError, TypeError):
+        logger.info("timezone lookup failed")
         return None
 
-    if payload.get("status") != "OK":
-        logger.info("timezone lookup for %r returned %s", place, payload.get("status"))
+    if not isinstance(payload, dict) or payload.get("status") != "OK":
         return None
 
     raw, dst = payload.get("rawOffset"), payload.get("dstOffset")
     if raw is None or dst is None:
         return None
-    return timedelta(seconds=int(raw) + int(dst))
+    try:
+        return timedelta(seconds=int(raw) + int(dst))
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 async def get_travel_time(
@@ -692,6 +802,21 @@ async def get_travel_time(
             code=BAD_REQUEST,
         )
 
+    if depart_at is not None and chosen in ("DRIVE", "TRANSIT"):
+        departure = depart_at if depart_at.tzinfo else depart_at.replace(tzinfo=UTC)
+        remaining = departure - datetime.now(UTC)
+        if remaining < MIN_DEPARTURE_LEAD or (
+            chosen == "TRANSIT" and remaining > timedelta(days=100)
+        ):
+            return TravelTime(
+                ok=False,
+                origin=origin,
+                destination=destination,
+                mode=chosen,
+                error="route data unavailable for this departure time; recheck nearer travel",
+                code=NO_COVERAGE,
+            )
+
     if client is not None:
         return await _route(client, origin, destination, chosen, depart_at)
     timeout = httpx.Timeout(settings.tool_timeout_seconds)
@@ -718,6 +843,7 @@ def _route_body(
         # minutes, true at 4am and nowhere near true when anyone travels. Measuring
         # exists to beat the model's optimism, not to launder it.
         body["routingPreference"] = "TRAFFIC_AWARE"
+        body["extraComputations"] = ["TOLLS"]
     if mode in ("TRANSIT", "DRIVE"):
         body["departureTime"] = _departure_iso(depart_at)
     return body
@@ -726,16 +852,13 @@ def _route_body(
 def _departure_iso(depart_at: datetime | None) -> str:
     """The instant to measure for, as the API wants it written.
 
-    Prefers what the caller asked for. Rejects anything in the past or nearly so, rather
-    than passing it on: the API answers a past `departureTime` with an error for driving
-    and with nothing at all for transit, and a failed lookup reads exactly like an
-    unreachable destination.
+    Explicit departures keep their date and time. get_travel_time rejects unavailable
+    dates; only a caller without a departure receives a generic reference.
     """
     now = datetime.now(UTC)
     if depart_at is not None:
         moment = depart_at if depart_at.tzinfo else depart_at.replace(tzinfo=UTC)
-        if moment - now >= MIN_DEPARTURE_LEAD:
-            return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
     reference = now + timedelta(days=TRANSIT_REFERENCE_DAYS)
     while reference.weekday() >= 5:  # Saturday or Sunday: thinner timetables.
@@ -805,6 +928,9 @@ async def _route(
         )
 
     route = routes[0]
+    advisory = route.get("travelAdvisory") or {}
+    raw_tolls = (advisory.get("tollInfo") or {}).get("estimatedPrice") or []
+    tolls = [price for raw in raw_tolls if (price := google_money(raw)) is not None]
     return TravelTime(
         ok=True,
         origin=origin,
@@ -812,4 +938,8 @@ async def _route(
         mode=mode,
         seconds=_parse_duration(route.get("duration")),
         meters=route.get("distanceMeters"),
+        transit_fare=google_money(advisory.get("transitFare")) if mode == "TRANSIT" else None,
+        toll_prices=tolls if mode == "DRIVE" else [],
+        toll_prices_known=mode == "DRIVE"
+        and ("tollInfo" not in advisory or bool(raw_tolls) and len(tolls) == len(raw_tolls)),
     )

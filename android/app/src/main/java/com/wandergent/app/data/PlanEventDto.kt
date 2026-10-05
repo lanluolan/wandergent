@@ -61,6 +61,7 @@ fun toolLabel(name: String, subject: String? = null): String = when (name) {
         subject?.let { "Checking the forecast for $it" } ?: "Checking the forecast"
     "remember_preference" -> "Remembering your preference"
     "search_places" -> "Finding places to go"
+    "search_web" -> "Researching travel details"
     "get_travel_time" -> "Checking travel times"
     else -> name
 }
@@ -98,5 +99,10 @@ fun violationLabel(code: String): String = when (code) {
     "vague_venue" -> "venue not named"
     "outside_opening_hours" -> "venue closed then"
     "understated_cost" -> "cost looks understated"
+    "arrival_conflict" -> "activity before arrival"
+    "hotel_window_conflict" -> "hotel time conflict"
+    "journey_conflict" -> "journey or connection conflict"
+    "temporal_unverified" -> "travel times need confirmation"
+    "journey_time_estimated" -> "estimated journey times"
     else -> code
 }

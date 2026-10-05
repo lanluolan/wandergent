@@ -1,10 +1,4 @@
-"""Tests for the one thing a Google price *band* can honestly prove.
-
-Every cost in a plan is the model's invention, which makes the budget check only as
-sound as those inventions: a dinner entered at 0 lets an over-budget trip validate
-cleanly. A band is not a price and cannot be turned into one -- so the only inference
-drawn is that a venue Google charges for does not cost nothing.
-"""
+"""Restaurant priceRange midpoint budgets, without inventing missing prices."""
 
 import json
 from datetime import date
@@ -41,105 +35,97 @@ def plan(cost: float, title: str = "Dinner at Alinea", category: str = "food") -
     )
 
 
-def codes(itinerary: Itinerary, prices: dict[str, str]) -> list[str]:
-    report = validate_itinerary(itinerary, None, prices)
-    return [violation.code for violation in report.violations]
+def price(low=20, high=40, currency="USD"):
+    return {
+        "start_price": {"currency": currency, "amount": low},
+        "end_price": {"currency": currency, "amount": high},
+    }
 
 
-def test_a_priced_venue_budgeted_at_nothing_is_caught() -> None:
-    assert "understated_cost" in codes(plan(0.0), {"Alinea": "PRICE_LEVEL_VERY_EXPENSIVE"})
+def codes(itinerary, prices):
+    return [v.code for v in validate_itinerary(itinerary, None, prices).violations]
 
 
-def test_the_cheapest_paid_band_still_is_not_free() -> None:
-    """INEXPENSIVE is a claim about scale, not about being free of charge."""
-    assert "understated_cost" in codes(plan(0.0), {"Alinea": "PRICE_LEVEL_INEXPENSIVE"})
+def test_restaurant_cost_below_midpoint_is_caught():
+    for amount in (0, 1, 29.99):
+        assert "understated_cost" in codes(plan(amount), {"Alinea": price()})
 
 
-def test_any_estimate_at_all_satisfies_it() -> None:
-    """The band cannot say whether 40 is the right number, so it does not try."""
-    assert "understated_cost" not in codes(plan(40.0), {"Alinea": "PRICE_LEVEL_VERY_EXPENSIVE"})
+def test_midpoint_or_higher_satisfies_price_check():
+    for amount in (30, 40):
+        assert "understated_cost" not in codes(plan(amount), {"Alinea": price()})
 
 
-def test_a_free_venue_with_a_cost_is_not_a_contradiction() -> None:
-    """A picnic in a free park still costs what the picnic costs. Flagging this would
-    manufacture violations out of perfectly sensible plans."""
-    assert "understated_cost" not in codes(plan(25.0), {"Alinea": "PRICE_LEVEL_FREE"})
-    assert "understated_cost" not in codes(plan(0.0), {"Alinea": "PRICE_LEVEL_FREE"})
+def test_midpoint_uses_whole_party_and_trip_currency():
+    itinerary = plan(30)
+    itinerary.travelers = 2
+    assert "understated_cost" in codes(itinerary, {"Alinea": price()})
+    assert "understated_cost" not in codes(itinerary, {"Alinea": price(currency="EUR")})
 
 
-def test_an_unspecified_band_is_no_opinion() -> None:
-    assert "understated_cost" not in codes(plan(0.0), {"Alinea": "PRICE_LEVEL_UNSPECIFIED"})
+def test_zero_price_range_does_not_prove_picnic_cost_wrong():
+    assert "understated_cost" not in codes(plan(25), {"Alinea": price(0, 0)})
+    assert "understated_cost" not in codes(plan(0), {"Alinea": price(0, 0)})
 
 
-def test_a_venue_that_was_never_looked_up_is_no_opinion() -> None:
-    """Most activities never reach a search. Silence must not read as a verdict."""
-    assert "understated_cost" not in codes(plan(0.0), {})
-    assert "understated_cost" not in codes(plan(0.0), {"Lou Malnati's": "PRICE_LEVEL_MODERATE"})
+def test_missing_one_sided_invalid_or_unmatched_range_is_no_opinion():
+    for prices in (
+        {},
+        {"Alinea": {}},
+        {"Alinea": {"start_price": {"currency": "USD", "amount": 20}}},
+        {"Alinea": price(40, 20)},
+        {"Elsewhere": price()},
+    ):
+        assert "understated_cost" not in codes(plan(0), prices)
 
 
-def test_transport_is_exempt() -> None:
-    """A price band describes a venue, and a train ride is not one."""
-    assert "understated_cost" not in codes(
-        plan(0.0, title="Train to Alinea", category="transport"),
-        {"Alinea": "PRICE_LEVEL_EXPENSIVE"},
-    )
+def test_place_range_does_not_price_transport_hotel_rest_or_admission():
+    for category in ("transport", "accommodation", "rest", "sightseeing", "activity"):
+        assert "understated_cost" not in codes(plan(0, category=category), {"Alinea": price()})
 
 
-def test_accommodation_is_exempt() -> None:
-    """A four-night hotel is billed once and entered at 0 on the other three nights, and
-    Google gives hotels price bands. Checking them would flag every multi-night trip."""
-    assert "understated_cost" not in codes(
-        plan(0.0, title="Second night at the hotel", category="accommodation"),
-        {"Alinea": "PRICE_LEVEL_EXPENSIVE"},
-    )
-
-
-def test_resting_somewhere_already_paid_for_is_exempt() -> None:
-    assert "understated_cost" not in codes(
-        plan(0.0, title="Rest at Alinea", category="rest"),
-        {"Alinea": "PRICE_LEVEL_EXPENSIVE"},
-    )
-
-
-def test_the_message_names_the_band_so_the_repair_can_act_on_it() -> None:
-    report = validate_itinerary(plan(0.0), None, {"Alinea": "PRICE_LEVEL_VERY_EXPENSIVE"})
+def test_repair_message_names_midpoint_venue_currency_and_party_size():
+    report = validate_itinerary(plan(0), None, {"Alinea": price()})
     message = next(v.message for v in report.violations if v.code == "understated_cost")
-
-    assert "very expensive" in message
-    assert "Alinea" in message
-
-
-# --- harvesting the band off the tool reply ---------------------------------------
+    assert "priceRange midpoint" in message
+    assert "Alinea" in message and "30.00 USD" in message
 
 
-def reply(**place) -> str:
-    return json.dumps({"ok": True, "query": "restaurants", "places": [place]})
+def reply(**place):
+    return json.dumps({"ok": True, "places": [place]})
 
 
-def test_the_band_is_kept_off_a_search_reply() -> None:
-    kept: dict[str, str] = {}
+def test_range_is_harvested_for_restaurants_only_and_legacy_band_is_ignored():
+    kept = {}
     harvest_place_prices(
-        "search_places", reply(name="Alinea", price_level="PRICE_LEVEL_EXPENSIVE"), kept
+        "search_places", reply(name="Alinea", types=["restaurant"], price_range=price()), kept
     )
+    assert kept == {"Alinea": price()}
+    harvest_place_prices(
+        "search_places", reply(name="Hotel", types=["hotel"], price_range=price()), kept
+    )
+    harvest_place_prices(
+        "search_places",
+        reply(name="Legacy", types=["restaurant"], price_level="PRICE_LEVEL_EXPENSIVE"),
+        kept,
+    )
+    assert kept == {"Alinea": price()}
 
-    assert kept == {"Alinea": "PRICE_LEVEL_EXPENSIVE"}
 
-
-def test_a_replayed_cache_hit_is_unwrapped() -> None:
-    """Identical calls are answered from the run cache, one level deeper. The data is
-    just as good the second time and must not be lost to the wrapper."""
-    kept: dict[str, str] = {}
-    inner = reply(name="Alinea", price_level="PRICE_LEVEL_EXPENSIVE")
+def test_replayed_cache_hit_is_unwrapped():
+    kept = {}
+    inner = reply(name="Alinea", types=["restaurant"], price_range=price())
     harvest_place_prices("search_places", json.dumps({"repeat": True, "result": inner}), kept)
+    assert kept == {"Alinea": price()}
 
-    assert kept == {"Alinea": "PRICE_LEVEL_EXPENSIVE"}
 
-
-def test_harvesting_never_raises_on_anything_it_is_handed() -> None:
-    """Bookkeeping must not be able to fail a plan."""
-    kept: dict[str, str] = {}
+def test_harvesting_never_raises_on_malformed_or_other_tool_results():
+    kept = {}
     for payload in ("", "not json", "[]", '{"places": [null, 3]}', '{"places": [{}]}'):
         harvest_place_prices("search_places", payload, kept)
-    harvest_place_prices("get_weather_forecast", reply(name="Alinea", price_level="X"), kept)
-
+    harvest_place_prices(
+        "get_weather_forecast",
+        reply(name="Alinea", types=["restaurant"], price_range=price()),
+        kept,
+    )
     assert kept == {}

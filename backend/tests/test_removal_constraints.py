@@ -112,8 +112,12 @@ async def test_highlight_removal_is_deterministic_without_rewriting_other_day():
         model="test-model",
     )
     assert result.validation.ok
-    assert result.itinerary.days[0].activities[0].highlights == ["Coffee"]
-    assert result.itinerary.days[1] == previous.days[1]
+    assert result.itinerary.days[0].activities[0].highlights == []
+    expected = previous.days[1].model_copy(deep=True)
+    for activity in expected.activities:
+        activity.highlights = []
+        activity.place_summary = None
+    assert result.itinerary.days[1] == expected
     assert len(llm.requests) == 1
 
 
@@ -129,6 +133,10 @@ async def test_stubborn_actual_visit_is_rejected_after_bounded_repair():
     )
     assert not result.validation.ok
     assert any(v.code == "constraint_mismatch" for v in result.validation.blocking)
-    assert result.itinerary.days[1] == previous.days[1]
+    expected = previous.days[1].model_copy(deep=True)
+    for activity in expected.activities:
+        activity.highlights = []
+        activity.place_summary = None
+    assert result.itinerary.days[1] == expected
     assert len(llm.requests) == 4
     assert "every remaining reference" in llm.requests[1]["messages"][-1]["content"]

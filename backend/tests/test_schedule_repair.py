@@ -16,7 +16,10 @@ from app.observability import RunTrace, _trace, route_facts
 from app.tools.maps import TravelTime
 
 DAY = date(2026, 10, 21)  # Wednesday
-BAND = "PRICE_LEVEL_MODERATE"
+RANGE = {
+    "start_price": {"currency": "USD", "amount": 20},
+    "end_price": {"currency": "USD", "amount": 40},
+}
 
 
 def plan():
@@ -61,7 +64,7 @@ def facts(**changes):
         "address": "10 Ocean Ave, Santa Monica",
         "types": ["restaurant"],
         "opening_hours": ["Wednesday: 16:00-22:00"],
-        "price_level": BAND,
+        "price_range": RANGE,
     }
     alternative.update(changes)
     return (
@@ -69,7 +72,7 @@ def facts(**changes):
             "Blue Daisy": ["Wednesday: 08:00-15:00"],
             alternative["name"]: alternative["opening_hours"],
         },
-        {"Blue Daisy": BAND, alternative["name"]: alternative["price_level"]},
+        {"Blue Daisy": RANGE, alternative["name"]: alternative["price_range"]},
         [
             ToolCallRecord(
                 name="search_places",
@@ -107,8 +110,13 @@ def test_dinner_uses_observed_open_restaurant_not_breakfast_hours_or_old_menu():
         {"opening_hours": []},
         {"opening_hours": ["Wednesday: Closed"]},
         {"opening_hours": ["Thursday: 16:00-22:00"]},
-        {"price_level": "PRICE_LEVEL_EXPENSIVE"},
-        {"price_level": None},
+        {
+            "price_range": {
+                "start_price": {"currency": "USD", "amount": 40},
+                "end_price": {"currency": "USD", "amount": 60},
+            }
+        },
+        {"price_range": None},
     ],
 )
 def test_unknown_wrong_type_closed_or_different_price_band_cannot_be_an_alternative(changes):
@@ -293,7 +301,7 @@ def test_conflicting_partial_candidate_does_not_starve_joint_restaurant_substitu
     value.days[0].activities.insert(1, lunch)
     hours, prices, records = facts()
     hours["Lunch Cafe"] = ["Wednesday: 10:45-14:30"]
-    prices["Lunch Cafe"] = BAND
+    prices["Lunch Cafe"] = RANGE
     observed = records[0].fact_payload["places"][0]
     alternatives = [
         dict(observed, name=f"All Day Restaurant {i}", opening_hours=["Wednesday: 14:00-22:00"])
@@ -302,7 +310,7 @@ def test_conflicting_partial_candidate_does_not_starve_joint_restaurant_substitu
     records[0].fact_payload["places"] = alternatives
     for alternative in alternatives:
         hours[alternative["name"]] = alternative["opening_hours"]
-        prices[alternative["name"]] = BAND
+        prices[alternative["name"]] = RANGE
     choices = list(hours_candidates(value, hours, prices, records))
     assert choices and len(choices) <= 4
     assert all(validate_itinerary(choice, hours, prices).ok for choice in choices)
@@ -507,7 +515,7 @@ async def test_live_graph_uses_fallback_after_model_repeats_closure_and_binds_ne
                     ok=True,
                     name="Blue Daisy",
                     opening_hours=["Wednesday: 08:00-15:00"],
-                    price_level=BAND,
+                    price_range=RANGE,
                     types=["restaurant"],
                 ),
                 Place(ok=True, **alternative),
@@ -526,7 +534,10 @@ async def test_live_graph_uses_fallback_after_model_repeats_closure_and_binds_ne
         ]
     )
     result = await plan_trip(
-        "1 day in Santa Monica, budget 100 USD", client=llm, model="test-model"
+        "1 day in Santa Monica, budget 100 USD",
+        client=llm,
+        model="test-model",
+        today=DAY - timedelta(days=1),
     )
     assert result.validation.ok
     assert result.itinerary.days[0].activities[1].title == "Dinner at Evening Restaurant"

@@ -90,7 +90,11 @@ async def test_unrequested_day_and_trip_frame_are_restored_server_side() -> None
     assert result.itinerary is not None
     assert result.itinerary.destination == CURRENT.destination
     assert result.itinerary.budget == CURRENT.budget
-    assert result.itinerary.days[0] == CURRENT.days[0]
+    expected = CURRENT.days[0].model_copy(deep=True)
+    for activity in expected.activities:
+        activity.highlights = []
+        activity.place_summary = None
+    assert result.itinerary.days[0] == expected
     assert result.itinerary.days[1].activities[0].title == "Requested ramen lunch"
 
 

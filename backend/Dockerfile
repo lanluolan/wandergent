@@ -39,6 +39,7 @@ WORKDIR /app
 
 COPY --from=builder --chown=wandergent:wandergent /app/.venv /app/.venv
 COPY --chown=wandergent:wandergent app ./app
+COPY --chown=wandergent:wandergent skills ./skills
 
 # Where the three SQLite files live. Created here with the right owner so a named volume
 # mounted over it inherits that ownership -- Docker copies the image's directory metadata

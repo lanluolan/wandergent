@@ -18,9 +18,14 @@ import com.wandergent.app.data.local.ChatTurnRepository
 import com.wandergent.app.data.local.SavedPlanEntity
 import com.wandergent.app.data.local.SavedPlanRepository
 import com.wandergent.app.data.local.WandergentDatabase
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 
 /** One tool the agent invoked, and how it went. `ok == null` means still running. */
@@ -39,8 +44,8 @@ data class LiveProgress(
     /** Latest constraint check. Null until it has run; empty list means it passed. */
     val violations: List<Violation>? = null,
     /**
-     * The one line under the progress bar, overwritten by each event. The stage above the
-     * bar says which phase the run is in; this says what is happening inside it. One line
+     * The short detail under the progress bar, overwritten by each event. The stage above the
+     * bar says which phase the run is in; this says what is happening inside it. A short detail
      * rather than a running log, which pushed the answer itself off the screen.
      */
     val detail: String? = null,
@@ -59,6 +64,8 @@ sealed interface TurnState {
     data class Loaded(val response: PlanResponse) : TurnState
 
     data class Error(val message: String, val retryable: Boolean) : TurnState
+
+    data object Cancelled : TurnState
 }
 
 /**
@@ -107,6 +114,7 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     val transcript: StateFlow<List<Exchange>> = _transcript.asStateFlow()
 
     private var nextId = 1L
+    private var planningJob: Job? = null
 
     /**
      * Adopt an account and restore its conversation. A follow-up edits the plan above it,
@@ -196,11 +204,18 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     fun retry(id: Long) {
         val exchange = _transcript.value.firstOrNull { it.id == id } ?: return
         if (anyRunning()) return
+        if (exchange.state !is TurnState.Error && exchange.state != TurnState.Cancelled) return
         val previous = if (exchange.revision) latestItinerary(before = id) else null
         update(id) {
             it.copy(state = TurnState.Running(LiveProgress(stage = "Connecting")), saved = false)
         }
         run(id, exchange.request, previous)
+    }
+
+    fun cancel() {
+        val exchange = _transcript.value.firstOrNull { it.state is TurnState.Running } ?: return
+        planningJob?.cancel()
+        setState(exchange.id, TurnState.Cancelled)
     }
 
     fun save(id: Long) {
@@ -222,7 +237,7 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Record a finished round. Only on success: a failed run has nothing to revise from. */
     private fun remember(id: Long, response: PlanResponse) {
-        if (response.itinerary == null) return
+        if (response.itinerary == null && response.clarification == null) return
         val exchange = _transcript.value.firstOrNull { it.id == id } ?: return
         viewModelScope.launch {
             history.append(owner, exchange.request, response, exchange.revision)
@@ -232,25 +247,47 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
     private fun stateOf(id: Long): TurnState? =
         _transcript.value.firstOrNull { it.id == id }?.state
 
-    private fun constraintsBefore(id: Long, previous: Itinerary?) =
-        if (previous == null) null else _transcript.value.asSequence()
+    private fun constraintsBefore(id: Long) =
+        _transcript.value.asSequence()
             .filter { it.id < id }
             .mapNotNull { (it.state as? TurnState.Loaded)?.response }
-            .lastOrNull { it.itinerary != null }?.constraints
+            .lastOrNull { it.itinerary != null || it.clarification != null }?.constraints
+
+    private fun continuationBefore(id: Long) = _transcript.value.asSequence()
+        .filter { it.id < id }
+        .mapNotNull { (it.state as? TurnState.Loaded)?.response }
+        .lastOrNull()?.continuation
+
+    private fun confirmsWeather(id: Long, message: String): Boolean =
+        continuationBefore(id)?.weatherDates?.isNotEmpty() == true &&
+            message.trim().trimEnd('.', '!', '。', '！').lowercase() in setOf(
+                "yes", "yes please", "yes, continue", "continue", "confirm", "confirmed",
+                "continue with seasonal weather", "是", "好的", "可以", "确认", "继续",
+                "确认继续", "按季节天气继续",
+            )
 
     private fun run(id: Long, request: String, previous: Itinerary? = null) {
-        viewModelScope.launch {
+        planningJob = viewModelScope.launch {
             var progress = LiveProgress()
             var events = 0
 
             try {
-                repository.stream(request, currency, previous, constraintsBefore(id, previous)).collect { event ->
+                collectPlanEvents(repository.stream(
+                    request, currency, previous, constraintsBefore(id),
+                    continuationBefore(id), confirmsWeather(id, request),
+                )) { event ->
+                    currentCoroutineContext().ensureActive()
                     events++
                     progress = reduceProgress(progress, event)
                     when (event.type) {
-                        PlanEventDto.RESULT -> event.result?.let {
-                            setState(id, TurnState.Loaded(it))
-                            remember(id, it)
+                        PlanEventDto.RESULT -> {
+                            val response = event.result
+                            if (response != null) {
+                                setState(id, TurnState.Loaded(response))
+                                remember(id, response)
+                            } else {
+                                setState(id, TurnState.Error("No plan was received. Please retry.", true))
+                            }
                         }
                         PlanEventDto.ERROR -> setState(
                             id,
@@ -261,13 +298,18 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 // The stream closed without a terminal event; nothing was decided.
                 if (stateOf(id) is TurnState.Running) {
-                    fallBackToNonStreaming(id, request, previous, "Connection dropped")
+                    if (shouldFallBack(events, null)) {
+                        fallBackToNonStreaming(id, request, previous)
+                    } else {
+                        setState(id, TurnState.Error("Connection dropped before the plan was ready. Please retry.", true))
+                    }
                 }
             } catch (e: StreamFailure) {
+                currentCoroutineContext().ensureActive()
                 // The transport may not survive SSE -- a proxy buffering the response,
                 // most often. See [shouldFallBack] for when a retry is worth it.
                 if (shouldFallBack(events, e.status)) {
-                    fallBackToNonStreaming(id, request, previous, e.message ?: "Streaming failed")
+                    fallBackToNonStreaming(id, request, previous)
                 } else {
                     val failure = describeFailure(e.status, e.detail)
                     setState(id, TurnState.Error(failure.message, failure.retryable))
@@ -280,20 +322,38 @@ class PlanViewModel(application: Application) : AndroidViewModel(application) {
         id: Long,
         message: String,
         previous: Itinerary?,
-        reason: String,
     ) {
-        setState(id, TurnState.Running(LiveProgress(stage = "$reason -- retrying without streaming")))
+        setState(id, TurnState.Running(LiveProgress(
+            stage = "Reconnecting",
+            detail = "Trying another connection. You can still stop generation.",
+        )))
         // Carries `previous` too: a degraded transport must not silently turn an edit
         // into a from-scratch replan.
-        when (val outcome = repository.plan(message, currency, previous, constraintsBefore(id, previous))) {
+        when (val outcome = repository.plan(
+            message, currency, previous, constraintsBefore(id),
+            continuationBefore(id), confirmsWeather(id, message),
+        )) {
             is PlanOutcome.Success -> {
+                currentCoroutineContext().ensureActive()
                 setState(id, TurnState.Loaded(outcome.response))
                 remember(id, outcome.response)
             }
-            is PlanOutcome.Failure ->
+            is PlanOutcome.Failure -> {
+                currentCoroutineContext().ensureActive()
                 setState(id, TurnState.Error(outcome.message, outcome.retryable))
+            }
         }
     }
+}
+
+internal suspend fun collectPlanEvents(
+    events: Flow<PlanEventDto>,
+    onEvent: suspend (PlanEventDto) -> Unit,
+) {
+    events.takeWhile { event ->
+        onEvent(event)
+        event.type != PlanEventDto.RESULT && event.type != PlanEventDto.ERROR
+    }.collect { }
 }
 
 /**
@@ -373,8 +433,7 @@ internal fun reduceProgress(current: LiveProgress, event: PlanEventDto): LivePro
                 current.copy(
                     violations = found,
                     detail = when {
-                        // Verdict first: the line is one row and truncates, so the word
-                        // carrying the answer must not sit at the end.
+                        // Verdict first, so a truncated detail still shows the outcome.
                         found.isEmpty() -> "All clear - budget, timing and routing"
                         found.size == 1 -> "Fixing 1 problem: $named"
                         else -> "Fixing ${found.size} problems: $named"
